@@ -8,7 +8,9 @@ import '../../services/auth_service.dart';
 import '../../widgets/student/student_shell.dart';
 
 class MyClaimsScreen extends StatefulWidget {
-  const MyClaimsScreen({super.key});
+  final int? initialClaimId;
+
+  const MyClaimsScreen({super.key, this.initialClaimId});
 
   @override
   State<MyClaimsScreen> createState() =>
@@ -28,6 +30,14 @@ class _MyClaimsScreenState
 
   bool _isLoading = true;
   String? _errorMessage;
+  bool _initialClaimHandled = false;
+  bool _questionDialogOpen = false;
+  final String? _claimantId = AuthService.currentUser?['user_id']?.toString();
+
+  bool get _isCurrentUser =>
+      _claimantId != null &&
+      AuthService.currentUser?['user_id']?.toString() == _claimantId &&
+      AuthService.authToken?.isNotEmpty == true;
 
   final List<Map<String, dynamic>> _claims = [];
 
@@ -42,22 +52,26 @@ class _MyClaimsScreenState
   // =========================================================
 
   Future<void> _loadClaims() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
+      if (!_isCurrentUser) throw Exception('Please sign in and reopen My Claims.');
       final response = await http.get(
         Uri.parse(
           '${AuthService.baseUrl}/claims/my',
         ),
         headers: AuthService.authenticatedHeaders(),
-      );
+      ).timeout(const Duration(seconds: 20));
 
-      final body = jsonDecode(
-        response.body,
-      );
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Invalid claim response');
+      }
+      final body = decoded;
 
       if (response.statusCode != 200) {
         throw Exception(
@@ -65,8 +79,11 @@ class _MyClaimsScreenState
         );
       }
 
-      final rawClaims =
-          body['claims'] as List<dynamic>? ?? [];
+      final rawClaims = body['claims'];
+      if (rawClaims is! List || rawClaims.any((claim) => claim is! Map)) {
+        throw const FormatException('Invalid claim list');
+      }
+      if (!_isCurrentUser) throw Exception('Your session changed. Reopen My Claims.');
 
       if (!mounted) return;
 
@@ -84,6 +101,7 @@ class _MyClaimsScreenState
 
         _isLoading = false;
       });
+      _openInitialClaimOnce();
     } catch (error) {
       if (!mounted) return;
 
@@ -97,6 +115,19 @@ class _MyClaimsScreenState
             );
       });
     }
+  }
+
+  void _openInitialClaimOnce() {
+    final id = widget.initialClaimId;
+    if (id == null || _initialClaimHandled || !_isCurrentUser) return;
+    _initialClaimHandled = true;
+    if (!_claims.any((claim) => '${claim['claim_id']}' == '$id' &&
+        '${claim['claim_status']}'.toUpperCase() == 'PENDING')) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _isCurrentUser) _openSecurityQuestions('$id');
+    });
   }
 
   // =========================================================
@@ -464,15 +495,26 @@ class _MyClaimsScreenState
   // CLAIM SECURITY QUESTIONS
   // =========================================================
   Future<void> _openSecurityQuestions(String claimId) async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => _SecurityQuestionsDialog(
-        claimId: claimId,
-        onCompleted: _loadClaims,
-      ),
-    );
+    if (!mounted || !_isCurrentUser || _questionDialogOpen) return;
+    if (!_claims.any((claim) => '${claim['claim_id']}' == claimId &&
+        '${claim['claim_status']}'.toUpperCase() == 'PENDING')) {
+      return;
+    }
+    _questionDialogOpen = true;
+    try {
+      final message = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _SecurityQuestionsDialog(claimId: claimId),
+      );
+      if (!mounted || !_isCurrentUser) return;
+      await _loadClaims();
+      if (mounted && _isCurrentUser && message != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      }
+    } finally {
+      _questionDialogOpen = false;
+    }
   }
 
   Future<void> _openCollectionOtp(String claimId) async {
@@ -674,8 +716,7 @@ class _MyClaimsScreenState
 // Dialog reads only trusted question text; reference answers stay on server.
 class _SecurityQuestionsDialog extends StatefulWidget {
   final String claimId;
-  final Future<void> Function() onCompleted;
-  const _SecurityQuestionsDialog({required this.claimId, required this.onCompleted});
+  const _SecurityQuestionsDialog({required this.claimId});
 
   @override
   State<_SecurityQuestionsDialog> createState() => _SecurityQuestionsDialogState();
@@ -689,6 +730,12 @@ class _SecurityQuestionsDialogState extends State<_SecurityQuestionsDialog> {
   bool _sending = false;
   String? _error;
   List<Map<String, dynamic>> _questions = [];
+  final String? _claimantId = AuthService.currentUser?['user_id']?.toString();
+
+  bool get _isCurrentUser =>
+      _claimantId != null &&
+      AuthService.currentUser?['user_id']?.toString() == _claimantId &&
+      AuthService.authToken?.isNotEmpty == true;
 
   @override
   void initState() {
@@ -704,23 +751,37 @@ class _SecurityQuestionsDialogState extends State<_SecurityQuestionsDialog> {
   }
 
   Future<void> _fetchQuestions() async {
+    if (_sending) return;
+    setState(() { _loading = true; _error = null; _questions = []; });
     try {
+      if (!_isCurrentUser) throw Exception('Your session changed. Reopen My Claims.');
       final response = await http.get(
         Uri.parse('${AuthService.baseUrl}/claims/${widget.claimId}/security-questions'),
         headers: AuthService.authenticatedHeaders(),
-      );
+      ).timeout(const Duration(seconds: 20));
       final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Invalid question response. Please retry.');
+      }
       if (response.statusCode != 200) {
         throw Exception(decoded['message'] ?? 'Could not load questions');
       }
-      final raw = decoded['questions'] as List<dynamic>? ?? [];
+      final raw = decoded['questions'];
+      if (raw is! List || raw.any((question) => question is! Map)) {
+        throw const FormatException('Invalid ownership questions. Please retry or contact admin.');
+      }
       final questions = raw.map((q) => Map<String, dynamic>.from(q as Map)).toList();
       questions.sort((a, b) => (int.tryParse('${a['question_no']}') ?? 0)
           .compareTo(int.tryParse('${b['question_no']}') ?? 0));
       if (questions.length != 2 ||
           questions[0]['question_no'].toString() != '1' ||
-          questions[1]['question_no'].toString() != '2') {
+          questions[1]['question_no'].toString() != '2' ||
+          questions.any((question) => question['question_text'] is! String ||
+              (question['question_text'] as String).trim().isEmpty)) {
         throw Exception('This found item does not have two security questions. Contact admin.');
+      }
+      if ('${decoded['claim_id']}' != widget.claimId || !_isCurrentUser) {
+        throw Exception('Claim or session changed. Reopen My Claims.');
       }
       if (decoded['claim_status']?.toString().toUpperCase() != 'PENDING') {
         throw Exception('This claim is no longer waiting for answers. Refresh My Claims.');
@@ -737,9 +798,13 @@ class _SecurityQuestionsDialogState extends State<_SecurityQuestionsDialog> {
   }
 
   Future<void> _submit() async {
-    if (_sending || !_formKey.currentState!.validate()) return;
+    if (_sending || _questions.length != 2 ||
+        !(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
     setState(() { _sending = true; _error = null; });
     try {
+      if (!_isCurrentUser) throw Exception('Your session changed. Reopen My Claims.');
       final response = await http.post(
         Uri.parse('${AuthService.baseUrl}/claims/${widget.claimId}/security-answers'),
         headers: {
@@ -748,28 +813,37 @@ class _SecurityQuestionsDialogState extends State<_SecurityQuestionsDialog> {
         },
         body: jsonEncode({
           'answers': [
-            {'question_no': 1, 'answer_text': _answerOne.text.trim()},
-            {'question_no': 2, 'answer_text': _answerTwo.text.trim()},
+            {'question_no': int.parse('${_questions[0]['question_no']}'),
+              'answer_text': _answerOne.text.trim()},
+            {'question_no': int.parse('${_questions[1]['question_no']}'),
+              'answer_text': _answerTwo.text.trim()},
           ],
         }),
-      );
+      ).timeout(const Duration(seconds: 20));
       final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Unexpected submission response. Close and refresh My Claims.');
+      }
       if (response.statusCode != 201) {
         throw Exception(decoded['message'] ?? 'Unable to submit answers');
       }
       if (!mounted) return;
-      Navigator.of(context).pop();
-      await widget.onCompleted();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(decoded['message']?.toString() ?? 'Answers submitted'),
-      ));
+      if (!_isCurrentUser) throw Exception('Your session changed. Reopen My Claims.');
+      Navigator.of(context).pop(decoded['message']?.toString() ??
+          'Answers submitted. Check your updated claim status.');
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) setState(() => _sending = false);
     }
+  }
+
+  String? _validateAnswer(String? value) {
+    final length = value?.trim().length ?? 0;
+    if (length < 2) return 'Please enter at least 2 characters';
+    if (length > 250) return 'Use at most 250 characters';
+    return null;
   }
 
   @override
@@ -793,19 +867,23 @@ class _SecurityQuestionsDialogState extends State<_SecurityQuestionsDialog> {
                         Text('1. ${_questions[0]['question_text']}', style: const TextStyle(fontWeight: FontWeight.w600)),
                         const SizedBox(height: 8),
                         TextFormField(
+                          key: const ValueKey('ownership-answer-1'),
                           controller: _answerOne,
+                          enabled: !_sending,
                           maxLength: 250,
                           decoration: const InputDecoration(border: OutlineInputBorder(), labelText: 'Answer 1'),
-                          validator: (v) => v == null || v.trim().length < 2 ? 'Please enter your answer' : null,
+                          validator: _validateAnswer,
                         ),
                         const SizedBox(height: 12),
                         Text('2. ${_questions[1]['question_text']}', style: const TextStyle(fontWeight: FontWeight.w600)),
                         const SizedBox(height: 8),
                         TextFormField(
+                          key: const ValueKey('ownership-answer-2'),
                           controller: _answerTwo,
+                          enabled: !_sending,
                           maxLength: 250,
                           decoration: const InputDecoration(border: OutlineInputBorder(), labelText: 'Answer 2'),
-                          validator: (v) => v == null || v.trim().length < 2 ? 'Please enter your answer' : null,
+                          validator: _validateAnswer,
                         ),
                       ],
                       if (_error != null) ...[
@@ -822,6 +900,11 @@ class _SecurityQuestionsDialogState extends State<_SecurityQuestionsDialog> {
           onPressed: _sending ? null : () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
+        if (!_loading && _questions.isEmpty)
+          TextButton(
+            onPressed: _fetchQuestions,
+            child: const Text('Retry Questions'),
+          ),
         if (_questions.length == 2)
           FilledButton(
             onPressed: _sending ? null : _submit,

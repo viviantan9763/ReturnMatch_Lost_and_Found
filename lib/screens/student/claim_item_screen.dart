@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../../constants/app_colors.dart';
 import '../../services/auth_service.dart';
+import 'my_claims_screen.dart';
 
 class ClaimItemScreen extends StatefulWidget {
   final int itemId;
@@ -33,167 +34,153 @@ class _ClaimItemScreenState extends State<ClaimItemScreen> {
   final TextEditingController _claimReasonController =
       TextEditingController();
 
-  final TextEditingController _answer1Controller =
-      TextEditingController();
-
-  final TextEditingController _answer2Controller =
-      TextEditingController();
-
-  final TextEditingController _answer3Controller =
-      TextEditingController();
-
   bool _isSubmitting = false;
-  bool _submitted = false;
-
   int? _createdClaimId;
+  bool _creationUncertain = false;
+  final String? _claimantId = AuthService.currentUser?['user_id']?.toString();
+
+  bool get _isCurrentUser =>
+      _claimantId != null &&
+      AuthService.currentUser?['user_id']?.toString() == _claimantId &&
+      AuthService.authToken?.isNotEmpty == true;
 
   @override
   void dispose() {
     _claimReasonController.dispose();
-    _answer1Controller.dispose();
-    _answer2Controller.dispose();
-    _answer3Controller.dispose();
-
     super.dispose();
   }
 
-  // -------------------------------------------------------
-  // SUBMIT CLAIM + SECURITY ANSWERS
-  // -------------------------------------------------------
+  Map<String, dynamic> _decode(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    throw Exception('Unexpected server response (HTTP ${response.statusCode}).');
+  }
+
+  Future<int?> _findExistingClaim() async {
+    if (!_isCurrentUser) throw Exception('Please reopen this page after signing in.');
+    final response = await http.get(
+      Uri.parse('${AuthService.baseUrl}/claims/my'),
+      headers: AuthService.authenticatedHeaders(),
+    ).timeout(const Duration(seconds: 20));
+    final body = _decode(response);
+    if (response.statusCode != 200) {
+      throw Exception(body['message'] ?? 'Could not check your existing claims.');
+    }
+    if (!_isCurrentUser) throw Exception('Your session changed. Reopen My Claims.');
+    final claims = body['claims'];
+    if (claims is! List || claims.any((claim) => claim is! Map)) {
+      throw Exception('Invalid claim history. Please refresh My Claims.');
+    }
+    for (final claim in claims.cast<Map>()) {
+      final id = int.tryParse('${claim['claim_id']}');
+      final itemId = int.tryParse('${claim['item_id']}');
+      if (id == null || id < 1 || itemId == null || itemId < 1 ||
+          claim['claim_status'] is! String ||
+          (claim['claim_status'] as String).trim().isEmpty) {
+        throw Exception('Invalid claim history. Please refresh My Claims.');
+      }
+      if (itemId == widget.itemId &&
+          const ['PENDING', 'UNDER_REVIEW', 'VERIFICATION_REQUIRED', 'APPROVED']
+              .contains('${claim['claim_status']}'.toUpperCase())) {
+        return id;
+      }
+    }
+    return null;
+  }
+
+  void _openMyClaims([int? claimId]) {
+    if (!mounted || !_isCurrentUser) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => MyClaimsScreen(initialClaimId: claimId),
+      ),
+    );
+  }
 
   Future<void> _submitClaim() async {
-    if (!_formKey.currentState!.validate()) {
+    if (_isSubmitting) return;
+    if (!_isCurrentUser) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please sign in and reopen this page.')),
+      );
       return;
     }
-
-    setState(() {
-      _isSubmitting = true;
-    });
-
+    if (_createdClaimId != null) {
+      _openMyClaims(_createdClaimId);
+      return;
+    }
+    setState(() => _isSubmitting = true);
     try {
-      // ---------------------------------------------------
-      // 1. CREATE CLAIM
-      // POST /api/claims
-      // ---------------------------------------------------
-
-      final claimResponse = await http.post(
-        Uri.parse(
-          '${AuthService.baseUrl}/claims',
-        ),
-        headers: {
-          ...AuthService.authenticatedHeaders(),
-          'Content-Type': 'application/json',
-        },
+      // Re-entering this screen resumes an existing claim instead of recreating it.
+      final existingId = await _findExistingClaim();
+      if (!mounted) return;
+      if (existingId != null) {
+        _createdClaimId = existingId;
+        _openMyClaims(existingId);
+        return;
+      }
+      if (_creationUncertain) {
+        throw Exception('Creation could not be confirmed yet. Refresh My Claims '
+            'before attempting a new claim.');
+      }
+      if (!_formKey.currentState!.validate()) return;
+      if (!_isCurrentUser) throw Exception('Your session changed. Reopen My Claims.');
+      // A timeout or malformed success response must never trigger a blind replay.
+      _creationUncertain = true;
+      final response = await http.post(
+        Uri.parse('${AuthService.baseUrl}/claims'),
+        headers: AuthService.authenticatedHeaders(),
         body: jsonEncode({
           'item_id': widget.itemId,
-          'claim_reason':
-              _claimReasonController.text.trim(),
+          'claim_reason': _claimReasonController.text.trim(),
         }),
-      );
-
-      final claimBody =
-          jsonDecode(claimResponse.body);
-
-      if (claimResponse.statusCode != 201) {
-        throw Exception(
-          claimBody['message'] ??
-              'Failed to submit claim',
-        );
+      ).timeout(const Duration(seconds: 20));
+      if (response.statusCode >= 400 && response.statusCode < 500) {
+        _creationUncertain = false;
       }
-
-      final claimData =
-          Map<String, dynamic>.from(
-        claimBody['claim'],
-      );
-
-      final int claimId =
-          int.parse(
-        claimData['claim_id'].toString(),
-      );
-
-      _createdClaimId = claimId;
-
-      // ---------------------------------------------------
-      // 2. SUBMIT SECURITY ANSWERS
-      // POST /api/claims/:claimId/security-answers
-      // ---------------------------------------------------
-
-      final securityResponse = await http.post(
-        Uri.parse(
-          '${AuthService.baseUrl}/claims/$claimId/security-answers',
-        ),
-        headers: {
-          ...AuthService.authenticatedHeaders(),
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'answers': [
-            {
-              'question_text':
-                  'What colour is the item?',
-              'answer_text':
-                  _answer1Controller.text.trim(),
-            },
-            {
-              'question_text':
-                  'Describe any unique feature, mark, sticker or damage.',
-              'answer_text':
-                  _answer2Controller.text.trim(),
-            },
-            {
-              'question_text':
-                  'Provide another detail that can help verify ownership.',
-              'answer_text':
-                  _answer3Controller.text.trim(),
-            },
-          ],
-        }),
-      );
-
-      final securityBody =
-          jsonDecode(securityResponse.body);
-
-      if (securityResponse.statusCode != 201) {
-        throw Exception(
-          securityBody['message'] ??
-              'Claim was created, but security answers could not be submitted',
-        );
+      final body = _decode(response);
+      if (response.statusCode != 201) {
+        if (response.statusCode == 409) {
+          final savedId = await _findExistingClaim();
+          if (savedId != null) {
+            _createdClaimId = savedId;
+            _openMyClaims(savedId);
+            return;
+          }
+        }
+        throw Exception(body['message'] ?? 'Failed to submit claim.');
       }
-
-      if (!mounted) return;
-
-      setState(() {
-        _submitted = true;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Claim and security answers submitted successfully.',
-          ),
-        ),
-      );
+      final claim = body['claim'];
+      final id = claim is Map ? int.tryParse('${claim['claim_id']}') : null;
+      if (id == null || id < 1) {
+        throw Exception('Claim may have been saved. Open My Claims to continue.');
+      }
+      if (!_isCurrentUser) throw Exception('Your session changed. Reopen My Claims.');
+      _createdClaimId = id;
+      _creationUncertain = false;
+      _openMyClaims(id);
     } catch (error) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            error
-                .toString()
-                .replaceFirst(
-                  'Exception: ',
-                  '',
-                ),
-          ),
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSubmitting = false;
-        });
+      // Creation may have committed even when the HTTP response was lost.
+      if (_creationUncertain && mounted && _isCurrentUser) {
+        try {
+          final savedId = await _findExistingClaim();
+          if (savedId != null) {
+            _createdClaimId = savedId;
+            _openMyClaims(savedId);
+            return;
+          }
+        } catch (_) {
+          // Keep recovery available, without sending another creation request.
+        }
       }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(error.toString().replaceFirst('Exception: ', '')),
+      ));
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
@@ -217,9 +204,7 @@ class _ClaimItemScreenState extends State<ClaimItemScreen> {
         ),
       ),
 
-      body: _submitted
-          ? _buildSuccessState()
-          : _buildClaimForm(),
+      body: _buildClaimForm(),
     );
   }
 
@@ -314,43 +299,12 @@ class _ClaimItemScreenState extends State<ClaimItemScreen> {
 
             const SizedBox(height: 18),
 
-            _questionField(
-              number: 1,
-              question:
-                  'What colour is the item?',
-              controller:
-                  _answer1Controller,
-              hint:
-                  'Example: Black',
-            ),
-
-            const SizedBox(height: 16),
-
-            _questionField(
-              number: 2,
-              question:
-                  'Describe any unique feature, mark, sticker or damage.',
-              controller:
-                  _answer2Controller,
-              hint:
-                  'Example: Small scratch near the camera',
-            ),
-
-            const SizedBox(height: 16),
-
-            _questionField(
-              number: 3,
-              question:
-                  'Provide another detail that can help verify ownership.',
-              controller:
-                  _answer3Controller,
-              hint:
-                  'Example: Black protective case with red sticker',
-            ),
-
-            const SizedBox(height: 22),
-
             _verificationInfoCard(),
+            if (_creationUncertain)
+              TextButton(
+                onPressed: _isSubmitting ? null : () => _openMyClaims(),
+                child: const Text('Open My Claims'),
+              ),
 
             const SizedBox(height: 24),
 
@@ -404,7 +358,9 @@ class _ClaimItemScreenState extends State<ClaimItemScreen> {
                 label: Text(
                   _isSubmitting
                       ? 'Submitting...'
-                      : 'Submit Claim',
+                      : _creationUncertain
+                          ? 'Check Existing Claim'
+                          : 'Submit Claim',
 
                   style: const TextStyle(
                     color: Colors.white,
@@ -547,81 +503,6 @@ class _ClaimItemScreenState extends State<ClaimItemScreen> {
   }
 
   // -------------------------------------------------------
-  // QUESTION FIELD
-  // -------------------------------------------------------
-
-  Widget _questionField({
-    required int number,
-    required String question,
-    required TextEditingController controller,
-    required String hint,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(15),
-
-      decoration: BoxDecoration(
-        color: Colors.white,
-
-        borderRadius:
-            BorderRadius.circular(12),
-
-        border: Border.all(
-          color: AppColors.border,
-        ),
-      ),
-
-      child: Column(
-        crossAxisAlignment:
-            CrossAxisAlignment.start,
-
-        children: [
-          Text(
-            'Question $number',
-
-            style: const TextStyle(
-              color:
-                  AppColors.studentPrimary,
-              fontSize: 11,
-              fontWeight:
-                  FontWeight.w900,
-            ),
-          ),
-
-          const SizedBox(height: 5),
-
-          Text(
-            question,
-
-            style: const TextStyle(
-              color: textDark,
-              fontWeight:
-                  FontWeight.w800,
-            ),
-          ),
-
-          const SizedBox(height: 12),
-
-          TextFormField(
-            controller: controller,
-
-            decoration:
-                _inputDecoration(hint),
-
-            validator: (value) {
-              if (value == null ||
-                  value.trim().isEmpty) {
-                return 'Answer is required';
-              }
-
-              return null;
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  // -------------------------------------------------------
   // INFORMATION CARD
   // -------------------------------------------------------
 
@@ -656,7 +537,7 @@ class _ClaimItemScreenState extends State<ClaimItemScreen> {
 
           Expanded(
             child: Text(
-              'Your answers will be reviewed by an administrator before the item can be collected. '
+              'After submitting, answer the two item-specific ownership questions in My Claims. '
               'Do not include passwords, PINs or other highly sensitive information.',
 
               style: TextStyle(
@@ -669,149 +550,6 @@ class _ClaimItemScreenState extends State<ClaimItemScreen> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  // -------------------------------------------------------
-  // SUCCESS STATE
-  // -------------------------------------------------------
-
-  Widget _buildSuccessState() {
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-
-        child: Container(
-          constraints:
-              const BoxConstraints(
-            maxWidth: 500,
-          ),
-
-          padding: const EdgeInsets.all(28),
-
-          decoration: BoxDecoration(
-            color: Colors.white,
-
-            borderRadius:
-                BorderRadius.circular(
-              16,
-            ),
-
-            border: Border.all(
-              color: AppColors.border,
-            ),
-          ),
-
-          child: Column(
-            mainAxisSize:
-                MainAxisSize.min,
-
-            children: [
-              Container(
-                width: 72,
-                height: 72,
-
-                decoration:
-                    BoxDecoration(
-                  color: AppColors.success
-                      .withValues(
-                    alpha: 0.10,
-                  ),
-
-                  shape:
-                      BoxShape.circle,
-                ),
-
-                child: const Icon(
-                  Icons
-                      .check_circle_outline_rounded,
-                  color:
-                      AppColors.success,
-                  size: 40,
-                ),
-              ),
-
-              const SizedBox(height: 18),
-
-              const Text(
-                'Claim Submitted',
-
-                style: TextStyle(
-                  color: textDark,
-                  fontSize: 22,
-                  fontWeight:
-                      FontWeight.w900,
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              Text(
-                _createdClaimId == null
-                    ? 'Your claim was submitted successfully.'
-                    : 'Claim ID: $_createdClaimId',
-
-                style: const TextStyle(
-                  color:
-                      AppColors.textSecondary,
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              const Text(
-                'Your security answers have been submitted and the claim is now waiting for administrator verification.',
-
-                textAlign:
-                    TextAlign.center,
-
-                style: TextStyle(
-                  color:
-                      AppColors.textSecondary,
-                  height: 1.5,
-                ),
-              ),
-
-              const SizedBox(height: 22),
-
-              SizedBox(
-                width: double.infinity,
-
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(
-                      context,
-                    );
-                  },
-
-                  style:
-                      ElevatedButton.styleFrom(
-                    backgroundColor:
-                        studentOrange,
-
-                    padding:
-                        const EdgeInsets
-                            .symmetric(
-                      vertical: 14,
-                    ),
-                  ),
-
-                  child: const Text(
-                    'Done',
-
-                    style: TextStyle(
-                      color:
-                          Colors.white,
-                      fontWeight:
-                          FontWeight.w800,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
