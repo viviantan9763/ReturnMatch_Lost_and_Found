@@ -7,6 +7,7 @@ import '../../screens/student/report_selection_screen.dart';
 import '../../screens/student/search_item_screen.dart';
 import '../../screens/student/my_claims_screen.dart';
 import '../../screens/student/profile_screen.dart';
+import '../../screens/student/notification_screen.dart';
 
 enum StudentPage {
   home,
@@ -84,8 +85,8 @@ class _StudentShellState
         break;
 
       case StudentPage.notifications:
-        _showNotifications();
-        return;
+        destination = const NotificationScreen();
+      break;
     }
 
     Navigator.pushReplacement(
@@ -373,6 +374,7 @@ class _StudentShellState
                 'Notifications',
             onPressed:
                 _showNotifications,
+                
             icon: const Icon(
               Icons
                   .notifications_none_rounded,

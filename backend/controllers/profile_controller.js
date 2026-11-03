@@ -1,5 +1,6 @@
 const bcrypt = require('bcrypt');
 const pool = require('../config/db');
+const { passwordPolicyError } = require('../utils/password_policy');
 
 const getProfile = async (req, res) => {
   try {
@@ -120,6 +121,15 @@ const changePassword = async (req, res) => {
       return res.status(400).json({
         message: 'Current password is incorrect'
       });
+    }
+
+    const passwordError = passwordPolicyError(new_password);
+    if (passwordError) {
+      return res.status(400).json({ message: passwordError });
+    }
+
+    if (await bcrypt.compare(new_password, users[0].password_hash)) {
+      return res.status(400).json({ message: 'New password must be different from current password' });
     }
 
     const newHash = await bcrypt.hash(

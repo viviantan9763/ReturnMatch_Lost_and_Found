@@ -1,11 +1,13 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 import '../../constants/app_colors.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/admin/admin_shell.dart';
+import 'otp_collection_screen.dart';
 
 class ClaimReviewScreen extends StatefulWidget {
   const ClaimReviewScreen({super.key});
@@ -474,24 +476,47 @@ class _ClaimReviewScreenState extends State<ClaimReviewScreen> {
             ],
           );
 
-          final action = FilledButton.icon(
-            onPressed: () => _openClaimReview(claim),
-            style: FilledButton.styleFrom(
-              backgroundColor: adminBlue,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 13,
-              ),
-            ),
-            icon: Icon(
-              status == 'APPROVED'
-                  ? Icons.password_outlined
-                  : Icons.fact_check_outlined,
-              size: 18,
-            ),
-            label: Text(status == 'APPROVED' ? 'Collection' : 'Review'),
-          );
+          // Only approved claims can receive a collection OTP.
+          // Lookup is separate from confirmation, so finding an OTP does NOT
+          // automatically mark the item as handed over.
+          final Widget action = status == 'APPROVED'
+              ? Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () => _generateCollectionOtp(claim),
+                      icon: const Icon(Icons.password_outlined, size: 18),
+                      label: const Text('Generate OTP'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: _openOtpLookup,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: adminBlue,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 13,
+                        ),
+                      ),
+                      icon: const Icon(Icons.search_outlined, size: 18),
+                      label: const Text('Find by OTP'),
+                    ),
+                  ],
+                )
+              : FilledButton.icon(
+                  onPressed: () => _openClaimReview(claim),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: adminBlue,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 13,
+                    ),
+                  ),
+                  icon: const Icon(Icons.fact_check_outlined, size: 18),
+                  label: const Text('Review'),
+                );
 
           if (constraints.maxWidth < 720) {
             return Column(
@@ -515,6 +540,134 @@ class _ClaimReviewScreenState extends State<ClaimReviewScreen> {
         },
       ),
     );
+  }
+
+  Future<void> _openOtpLookup() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const OtpCollectionScreen(),
+      ),
+    );
+    if (mounted) {
+      await _loadClaims();
+    }
+  }
+
+  Future<void> _generateCollectionOtp(Map<String, dynamic> claim) async {
+    final claimId = int.tryParse(_text(claim['claim_id']));
+    if (claimId == null || claimId <= 0) {
+      _showMessage('Invalid claim ID.', isError: true);
+      return;
+    }
+    if (_text(claim['claim_status']).toUpperCase() != 'APPROVED') {
+      _showMessage('Only approved claims can receive an OTP.', isError: true);
+      return;
+    }
+
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Generate Collection OTP?'),
+        content: Text(
+          'Claim #$claimId • ${_fallback(claim['item_name'], 'Item')}\n\n'
+          'Generate a 6-digit collection code valid for 10 minutes. '
+          'Any previous active OTP for this claim will become invalid. '
+          'Only generate it when the student is ready to collect the item.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Generate OTP'),
+          ),
+        ],
+      ),
+    );
+    if (proceed != true || !mounted) return;
+
+    try {
+      final response = await http.post(
+        Uri.parse('${AuthService.baseUrl}/claims/$claimId/otp'),
+        headers: AuthService.authenticatedHeaders(),
+      );
+      if (response.statusCode != 201) {
+        _showMessage(
+          _extractMessage(response, fallback: 'Failed to generate OTP.'),
+          isError: true,
+        );
+        return;
+      }
+      final body = jsonDecode(response.body);
+      if (body is! Map || body['otp'] is! Map) {
+        _showMessage('Unexpected OTP response.', isError: true);
+        return;
+      }
+      final otpData = body['otp'] as Map;
+      final code = otpData['otp_code']?.toString() ?? '';
+      if (!RegExp(r'^\d{6}$').hasMatch(code)) {
+        _showMessage('The server did not return a valid 6-digit code.', isError: true);
+        return;
+      }
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Collection OTP Generated'),
+          content: SizedBox(
+            width: 390,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Claim #$claimId • ${_fallback(claim['item_name'], 'Item')}'),
+                const SizedBox(height: 16),
+                Center(
+                  child: SelectableText(
+                    code,
+                    style: const TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 6,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Valid for 10 minutes. Student can see the same code in '
+                  'My Claims → View Collection OTP. Do not share it with '
+                  'anyone other than the intended claimant.',
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: code));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('OTP copied for testing.')),
+                );
+              },
+              icon: const Icon(Icons.copy),
+              label: const Text('Copy for Test'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      );
+      if (mounted) await _loadClaims();
+    } catch (error) {
+      _showMessage(
+        'Unable to generate OTP: $error',
+        isError: true,
+      );
+    }
   }
 
   Future<Map<String, dynamic>> _loadSecurityAnswers(int claimId) async {
@@ -549,7 +702,7 @@ class _ClaimReviewScreenState extends State<ClaimReviewScreen> {
     final status = _text(claim['claim_status']).toUpperCase();
 
     if (status == 'APPROVED') {
-      await _showOtpVerificationDialog(claim);
+      await _openOtpLookup();
       return;
     }
 
@@ -856,140 +1009,6 @@ class _ClaimReviewScreenState extends State<ClaimReviewScreen> {
             ? 'Claim approved successfully.'
             : 'Claim rejected successfully.',
       );
-      return true;
-    } catch (error) {
-      _showMessage('Unable to connect to server: $error', isError: true);
-      return false;
-    }
-  }
-
-  Future<void> _showOtpVerificationDialog(
-    Map<String, dynamic> claim,
-  ) async {
-    final claimId = int.tryParse(_text(claim['claim_id']));
-    if (claimId == null) return;
-
-    final controller = TextEditingController();
-    bool isSubmitting = false;
-
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Verify Collection OTP'),
-              content: SizedBox(
-                width: 430,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${_fallback(claim['item_name'], 'Item')} • Claim #$claimId',
-                      style: const TextStyle(
-                        color: textDark,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Enter the one-time collection code presented by the claimant.',
-                      style: TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: controller,
-                      enabled: !isSubmitting,
-                      keyboardType: TextInputType.number,
-                      maxLength: 6,
-                      decoration: const InputDecoration(
-                        labelText: '6-digit OTP',
-                        border: OutlineInputBorder(),
-                        counterText: '',
-                      ),
-                    ),
-                    if (isSubmitting) ...[
-                      const SizedBox(height: 12),
-                      const LinearProgressIndicator(color: adminBlue),
-                    ],
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: isSubmitting
-                      ? null
-                      : () => Navigator.pop(dialogContext),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: isSubmitting
-                      ? null
-                      : () async {
-                          final code = controller.text.trim();
-                          if (!RegExp(r'^\d{6}$').hasMatch(code)) {
-                            _showMessage(
-                              'Please enter a valid 6-digit OTP.',
-                              isError: true,
-                            );
-                            return;
-                          }
-
-                          setDialogState(() => isSubmitting = true);
-                          final success =
-                              await _verifyOtp(claimId, code);
-
-                          if (!mounted) return;
-                          if (success) {
-                            if (dialogContext.mounted) {
-                              Navigator.pop(dialogContext);
-                            }
-                            await _loadClaims();
-                          } else if (dialogContext.mounted) {
-                            setDialogState(() => isSubmitting = false);
-                          }
-                        },
-                  style: FilledButton.styleFrom(
-                    backgroundColor: adminBlue,
-                    foregroundColor: Colors.white,
-                  ),
-                  child: const Text('Verify & Collect'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    controller.dispose();
-  }
-
-  Future<bool> _verifyOtp(int claimId, String otpCode) async {
-    try {
-      final response = await http.post(
-        Uri.parse('${AuthService.baseUrl}/claims/$claimId/otp/verify'),
-        headers: {
-          ...AuthService.authenticatedHeaders(),
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({'otp_code': otpCode}),
-      );
-
-      if (response.statusCode != 200) {
-        _showMessage(
-          _extractMessage(response, fallback: 'OTP verification failed.'),
-          isError: true,
-        );
-        return false;
-      }
-
-      _showMessage('OTP verified. Item collection completed.');
       return true;
     } catch (error) {
       _showMessage('Unable to connect to server: $error', isError: true);

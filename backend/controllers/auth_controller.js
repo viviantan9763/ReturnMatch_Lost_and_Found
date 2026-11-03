@@ -1,6 +1,7 @@
 const bcrypt = require('bcrypt');
 const pool = require('../config/db');
 const jwt = require('jsonwebtoken');
+const { passwordPolicyError } = require('../utils/password_policy');
 
 const register = async (req, res) => {
   try {
@@ -11,6 +12,12 @@ const register = async (req, res) => {
       return res.status(400).json({
         message: 'Name, email and password are required'
       });
+    }
+
+    // Validate password on the server; client-side checks can be bypassed.
+    const passwordError = passwordPolicyError(password);
+    if (passwordError) {
+      return res.status(400).json({ message: passwordError });
     }
 
     // 2. Check whether email already exists

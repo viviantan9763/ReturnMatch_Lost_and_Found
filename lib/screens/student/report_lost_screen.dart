@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'dart:typed_data';
@@ -15,6 +16,7 @@ import 'package:http_parser/http_parser.dart';
 import '../../constants/app_colors.dart';
 
 import '../../services/auth_service.dart';
+import '../../widgets/student/student_shell.dart';
 
 class ReportLostScreen extends StatefulWidget {
 
@@ -80,6 +82,9 @@ class _ReportLostScreenState
 
   final ImagePicker _imagePicker = ImagePicker();
 
+  DateTime _clockNow = DateTime.now();
+  Timer? _clockTimer;
+
   // =========================================================
 
   // STATE
@@ -116,6 +121,14 @@ class _ReportLostScreenState
 
     super.initState();
 
+    // Default the occurrence date to today. Students can select an earlier date.
+    _dateController.text = _formatLocalDate(DateTime.now());
+    _clockNow = DateTime.now();
+    _clockTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) {
+        setState(() => _clockNow = DateTime.now());
+      }
+    });
     _loadCategories();
 
   }
@@ -130,6 +143,7 @@ class _ReportLostScreenState
 
   void dispose() {
 
+    _clockTimer?.cancel();
     _itemNameController.dispose();
 
     _modelController.dispose();
@@ -989,6 +1003,100 @@ class _ReportLostScreenState
   }
 
   // =========================================================
+  // AUTOMATIC DATE AND REPORT TIME
+  // =========================================================
+
+  String _formatLocalDate(DateTime date) {
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    return '$day/$month/${date.year}';
+  }
+
+  String _formatLocalDateTime(DateTime date) {
+    final hour = date.hour.toString().padLeft(2, '0');
+    final minute = date.minute.toString().padLeft(2, '0');
+    return '${_formatLocalDate(date)} $hour:$minute';
+  }
+
+  Future<void> _pickEventDate() async {
+    final today = DateTime.now();
+    final latest = DateTime(today.year, today.month, today.day);
+    final earliest = DateTime(2000);
+    final dateString = _convertDate(_dateController.text);
+    DateTime selected = dateString == null ? latest : DateTime.parse(dateString);
+    if (selected.isAfter(latest)) selected = latest;
+    if (selected.isBefore(earliest)) selected = earliest;
+
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: selected,
+      firstDate: earliest,
+      lastDate: latest,
+      helpText: 'Select date lost',
+    );
+    if (!mounted || picked == null) return;
+    setState(() => _dateController.text = _formatLocalDate(picked));
+  }
+
+  Widget _eventDateField() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Date Lost *',
+          style: TextStyle(color: textDark, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _dateController,
+          readOnly: true,
+          onTap: _isSubmitting ? null : _pickEventDate,
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: Colors.white,
+            helperText: 'Defaults to today. Tap to select an earlier date.',
+            suffixIcon: IconButton(
+              tooltip: 'Choose date lost',
+              onPressed: _isSubmitting ? null : _pickEventDate,
+              icon: const Icon(Icons.calendar_month_outlined,
+                  color: primaryOrange),
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.access_time, color: AppColors.textSecondary,
+                size: 16),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Current device time: ${_formatLocalDateTime(_clockNow)}. '
+                'The actual submission timestamp is recorded automatically '
+                'by the server when you submit this report.',
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // =========================================================
 
   // DATE CONVERSION
 
@@ -1168,7 +1276,7 @@ class _ReportLostScreenState
 
     _locationController.clear();
 
-    _dateController.clear();
+    _dateController.text = _formatLocalDate(DateTime.now());
 
     _descriptionController.clear();
 
@@ -1214,41 +1322,15 @@ class _ReportLostScreenState
 
   ) {
 
-    return Scaffold(
-
-      backgroundColor: background,
-
-      appBar: AppBar(
-
-        backgroundColor:
-
-            AppColors.studentPrimary,
-
-        foregroundColor:
-
-            Colors.white,
-
-        elevation: 0,
-
-        title: const Text(
-
-          'Report Lost Item',
-
-          style: TextStyle(
-
-            color: Colors.white,
-
-            fontWeight:
-
-                FontWeight.w900,
-
-          ),
-
-        ),
-
-      ),
-
-      body: SingleChildScrollView(
+    return StudentShell(
+      selectedPage: StudentPage.report,
+      title: 'Report Lost Item',
+      child: ColoredBox(
+        color: background,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 920),
+            child: SingleChildScrollView(
 
         padding:
 
@@ -1366,21 +1448,7 @@ class _ReportLostScreenState
 
             ),
 
-            _inputField(
-
-              label:
-
-                  'Date Lost',
-
-              hint:
-
-                  'Example: 23/09/2026',
-
-              controller:
-
-                  _dateController,
-
-            ),
+            _eventDateField(),
 
             const SizedBox(
 
@@ -1536,9 +1604,11 @@ class _ReportLostScreenState
 
         ),
 
-      ),
-
-    );
+      ), // SingleChildScrollView
+          ), // ConstrainedBox
+        ), // Center
+      ), // ColoredBox
+    ); // StudentShell
 
   }
 
@@ -2654,7 +2724,6 @@ class _ReportLostScreenState
                   onPressed: (_isSubmitting || _isAnalyzing)
                       ? null
                       : _removeImage,
-                
 
                 icon:
 
@@ -2861,6 +2930,5 @@ class _ReportLostScreenState
       ),
     );
   }
-
 
 }

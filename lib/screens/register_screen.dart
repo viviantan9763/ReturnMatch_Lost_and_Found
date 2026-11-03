@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../constants/app_colors.dart';
@@ -256,11 +258,29 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ),
           ),
           validator: (value) {
-            if (value == null || value.length < 8) {
-              return 'Use at least 8 characters';
+            if (value == null || value.isEmpty) {
+              return 'Password is required';
             }
-            if (confirm && value != _passwordController.text) {
-              return 'Passwords do not match';
+            if (confirm) {
+              if (value != _passwordController.text) {
+                return 'Passwords do not match';
+              }
+              return null;
+            }
+            if (value.runes.length < 12) {
+              return 'Use at least 12 characters';
+            }
+            if (utf8.encode(value).length > 72) {
+              return 'Password is too long (maximum 72 UTF-8 bytes)';
+            }
+            const commonPasswords = {
+              'password123', 'password1234', 'password12345',
+              '123456789012', '1234567890123', 'qwerty123456',
+              'qwertyuiop123', 'admin12345678',
+              'letmein123456', 'iloveyou1234',
+            };
+            if (commonPasswords.contains(value.toLowerCase().trim())) {
+              return 'Password is too common';
             }
             return null;
           },
