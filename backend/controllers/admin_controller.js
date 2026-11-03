@@ -1,14 +1,24 @@
 const bcrypt = require('bcrypt');
 const pool = require('../config/db');
+const { passwordPolicyError } = require('../utils/password_policy');
 
 const createAdmin = async (req, res) => {
+  if (!req.user || req.user.role !== 'SUPER_ADMIN') {
+    return res.status(403).json({ message: 'Super Admin access required' });
+  }
+
   try {
-    const { name, email, password, phone_no } = req.body;
+    const { name, email, password, phone_no } = req.body || {};
 
     if (!name || !email || !password) {
       return res.status(400).json({
         message: 'Name, email and password are required'
       });
+    }
+
+    const passwordError = passwordPolicyError(password);
+    if (passwordError) {
+      return res.status(400).json({ message: passwordError });
     }
 
     const [existingUsers] = await pool.query(

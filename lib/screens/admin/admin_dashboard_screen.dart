@@ -33,6 +33,10 @@ class _AdminDashboardScreenState
   int? _retentionDue;
   int? _auditLogs;
 
+  bool get _canManageAdmins =>
+      AuthService.authToken?.isNotEmpty == true &&
+      AuthService.currentUser?['role'] == 'SUPER_ADMIN';
+
   // ============================================================
   // INIT
 
@@ -827,19 +831,21 @@ class _AdminDashboardScreenState
               );
             },
           ),
-          _FunctionData(
-            title:
-                'Admin Management',
-            description:
-                'Create and manage authorized administrator access.',
-            icon: Icons
-                .manage_accounts_outlined,
-            onTap: () {
-              _goTo(
-                const CreateAdminScreen(),
-              );
-            },
-          ),
+          if (_canManageAdmins)
+            _FunctionData(
+              title:
+                  'Admin Management',
+              description:
+                  'Create and manage authorized administrator access.',
+              icon: Icons
+                  .manage_accounts_outlined,
+              onTap: () {
+                if (!_canManageAdmins) return;
+                _goTo(
+                  const CreateAdminScreen(),
+                );
+              },
+            ),
         ];
         return GridView.builder(
           shrinkWrap: true,

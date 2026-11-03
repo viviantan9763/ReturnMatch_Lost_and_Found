@@ -44,7 +44,7 @@ class _LoginScreenState extends State<LoginScreen> {
       final user = result['user'] as Map<String, dynamic>?;
       final role = (user?['role'] ?? 'USER').toString().toUpperCase();
 
-      final destination = role == 'ADMIN'
+      final destination = (role == 'ADMIN' || role == 'SUPER_ADMIN')
           ? const AdminDashboardScreen()
           : const StudentHomeScreen();
 

@@ -49,6 +49,10 @@ class _AdminShellState extends State<AdminShell> {
   // between top-level admin pages.
   static bool _desktopExpanded = true;
 
+  bool get _canManageAdmins =>
+      AuthService.authToken?.isNotEmpty == true &&
+      AuthService.currentUser?['role'] == 'SUPER_ADMIN';
+
   // ============================================================
   // BUILD
   // ============================================================
@@ -282,14 +286,15 @@ class _AdminShellState extends State<AdminShell> {
                       expanded: expanded,
                     ),
 
-                    _navItem(
-                      page: AdminPage.adminManagement,
-                      icon: Icons.manage_accounts_outlined,
-                      activeIcon: Icons.manage_accounts_rounded,
-                      title: 'Admin Management',
-                      drawerMode: drawerMode,
-                      expanded: expanded,
-                    ),
+                    if (_canManageAdmins)
+                      _navItem(
+                        page: AdminPage.adminManagement,
+                        icon: Icons.manage_accounts_outlined,
+                        activeIcon: Icons.manage_accounts_rounded,
+                        title: 'Admin Management',
+                        drawerMode: drawerMode,
+                        expanded: expanded,
+                      ),
                   ],
                 ),
               ),
@@ -709,6 +714,8 @@ class _AdminShellState extends State<AdminShell> {
   void _navigateTo(
     AdminPage page,
   ) {
+    if (page == AdminPage.adminManagement && !_canManageAdmins) return;
+
     Widget screen;
 
     switch (page) {

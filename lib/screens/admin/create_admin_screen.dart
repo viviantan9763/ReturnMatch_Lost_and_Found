@@ -5,6 +5,8 @@ import 'package:http/http.dart' as http;
 
 import '../../constants/app_colors.dart';
 import '../../services/auth_service.dart';
+import '../../widgets/admin/admin_shell.dart';
+import 'admin_dashboard_screen.dart';
 
 class CreateAdminScreen extends StatefulWidget {
   const CreateAdminScreen({super.key});
@@ -22,6 +24,10 @@ class _CreateAdminScreenState extends State<CreateAdminScreen> {
   bool _isSubmitting = false;
   bool _hidePassword = true;
 
+  bool get _canManageAdmins =>
+      AuthService.authToken?.isNotEmpty == true &&
+      AuthService.currentUser?['role'] == 'SUPER_ADMIN';
+
   @override
   void dispose() {
     _nameController.dispose();
@@ -32,28 +38,29 @@ class _CreateAdminScreenState extends State<CreateAdminScreen> {
   }
 
   Future<void> _createAdmin() async {
+    if (!_canManageAdmins) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Super Admin access required.')),
+      );
+      return;
+    }
+
     final name = _nameController.text.trim();
     final email = _emailController.text.trim();
     final phone = _phoneController.text.trim();
-    final password = _passwordController.text.trim();
+    final password = _passwordController.text;
 
     if (name.isEmpty || email.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Name, email and password are required.',
-          ),
-        ),
+        const SnackBar(content: Text('Name, email and password are required.')),
       );
       return;
     }
 
     if (AuthService.authToken == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please login again.'),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Please login again.')));
       return;
     }
 
@@ -63,9 +70,7 @@ class _CreateAdminScreenState extends State<CreateAdminScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse(
-          '${AuthService.baseUrl}/admin/create-admin',
-        ),
+        Uri.parse('${AuthService.baseUrl}/admin/create-admin'),
         headers: AuthService.authenticatedHeaders(),
         body: jsonEncode({
           'name': name,
@@ -75,8 +80,7 @@ class _CreateAdminScreenState extends State<CreateAdminScreen> {
         }),
       );
 
-      final data =
-          jsonDecode(response.body) as Map<String, dynamic>;
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (!mounted) return;
 
@@ -98,8 +102,7 @@ class _CreateAdminScreenState extends State<CreateAdminScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              data['message']?.toString() ??
-                  'Failed to create administrator.',
+              data['message']?.toString() ?? 'Failed to create administrator.',
             ),
           ),
         );
@@ -107,11 +110,9 @@ class _CreateAdminScreenState extends State<CreateAdminScreen> {
     } catch (error) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Connection error: $error'),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Connection error: $error')));
     } finally {
       if (mounted) {
         setState(() {
@@ -123,154 +124,168 @@ class _CreateAdminScreenState extends State<CreateAdminScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.adminPrimary,
-        foregroundColor: Colors.white,
-        title: const Text(
-          'Create Administrator',
-          style: TextStyle(
-            fontWeight: FontWeight.w800,
-          ),
-        ),
-      ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(
-              maxWidth: 650,
-            ),
-            child: Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: AppColors.border,
-                ),
-              ),
+    if (!_canManageAdmins) {
+      return const AdminShell(
+        selectedPage: AdminPage.adminManagement,
+        child: Center(child: Text('Super Admin access required.')),
+      );
+    }
+
+    return AdminShell(
+      selectedPage: AdminPage.adminManagement,
+      child: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 800),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(
-                    Icons.admin_panel_settings_outlined,
-                    size: 44,
-                    color: AppColors.adminPrimary,
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  const Text(
-                    'Create Administrator Account',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-
-                  const SizedBox(height: 8),
-
-                  const Text(
-                    'Only authenticated administrators can create another administrator account.',
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      height: 1.4,
-                    ),
-                  ),
-
-                  const SizedBox(height: 24),
-
-                  _field(
-                    label: 'Name',
-                    controller: _nameController,
-                    hint: 'Example: Admin Staff',
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  _field(
-                    label: 'Email',
-                    controller: _emailController,
-                    hint: 'admin2@returnmatch.com',
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  _field(
-                    label: 'Phone Number',
-                    controller: _phoneController,
-                    hint: '0123456789',
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  const Text(
-                    'Temporary Password',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w800,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-
-                  const SizedBox(height: 8),
-
-                  TextField(
-                    controller: _passwordController,
-                    obscureText: _hidePassword,
-                    decoration: InputDecoration(
-                      hintText: 'Enter temporary password',
-                      filled: true,
-                      fillColor: Colors.white,
-                      suffixIcon: IconButton(
-                        onPressed: () {
-                          setState(() {
-                            _hidePassword = !_hidePassword;
-                          });
-                        },
-                        icon: Icon(
-                          _hidePassword
-                              ? Icons.visibility_outlined
-                              : Icons.visibility_off_outlined,
+                  // The AdminShell supplies the desktop sidebar and mobile drawer.
+                  // This page only builds its own content, not a second Scaffold.
+                  Wrap(
+                    spacing: 16,
+                    runSpacing: 12,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      const Text(
+                        'Admin Management',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textPrimary,
                         ),
                       ),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
+                      OutlinedButton.icon(
+                        onPressed: _isSubmitting
+                            ? null
+                            : () {
+                                Navigator.of(context).pushReplacement(
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        const AdminDashboardScreen(),
+                                  ),
+                                );
+                              },
+                        icon: const Icon(Icons.arrow_back),
+                        label: const Text('Back to Dashboard'),
                       ),
-                    ),
+                    ],
                   ),
-
-                  const SizedBox(height: 24),
-
-                  SizedBox(
+                  const SizedBox(height: 18),
+                  Container(
                     width: double.infinity,
-                    height: 52,
-                    child: ElevatedButton.icon(
-                      onPressed:
-                          _isSubmitting ? null : _createAdmin,
-                      icon: _isSubmitting
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.admin_panel_settings_outlined,
+                          size: 44,
+                          color: AppColors.adminPrimary,
+                        ),
+                        const SizedBox(height: 14),
+                        const Text(
+                          'Create Administrator Account',
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Only Super Admins can create administrator accounts.',
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            height: 1.4,
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        _field(
+                          label: 'Name',
+                          controller: _nameController,
+                          hint: 'Example: Admin Staff',
+                        ),
+                        const SizedBox(height: 14),
+                        _field(
+                          label: 'Email',
+                          controller: _emailController,
+                          hint: 'admin2@returnmatch.com',
+                        ),
+                        const SizedBox(height: 14),
+                        _field(
+                          label: 'Phone Number',
+                          controller: _phoneController,
+                          hint: '0123456789',
+                        ),
+                        const SizedBox(height: 14),
+                        const Text(
+                          'Temporary Password',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: _passwordController,
+                          obscureText: _hidePassword,
+                          decoration: InputDecoration(
+                            hintText: 'Enter temporary password',
+                            filled: true,
+                            fillColor: Colors.white,
+                            suffixIcon: IconButton(
+                              onPressed: () {
+                                setState(() {
+                                  _hidePassword = !_hidePassword;
+                                });
+                              },
+                              icon: Icon(
+                                _hidePassword
+                                    ? Icons.visibility_outlined
+                                    : Icons.visibility_off_outlined,
                               ),
-                            )
-                          : const Icon(
-                              Icons.person_add_alt_1_rounded,
                             ),
-                      label: Text(
-                        _isSubmitting
-                            ? 'Creating...'
-                            : 'Create Administrator',
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.adminPrimary,
-                        foregroundColor: Colors.white,
-                      ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 52,
+                          child: ElevatedButton.icon(
+                            onPressed: _isSubmitting ? null : _createAdmin,
+                            icon: _isSubmitting
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Icon(Icons.person_add_alt_1_rounded),
+                            label: Text(
+                              _isSubmitting
+                                  ? 'Creating...'
+                                  : 'Create Administrator',
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.adminPrimary,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -306,9 +321,7 @@ class _CreateAdminScreenState extends State<CreateAdminScreen> {
             hintText: hint,
             filled: true,
             fillColor: Colors.white,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
           ),
         ),
       ],
