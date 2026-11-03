@@ -1,7 +1,7 @@
 // ReturnMatch: OTP-first collection counter (ADMIN / SUPER_ADMIN only).
 // Uses existing claim_otp plaintext schema for compatibility. Do not log OTPs.
 const pool = require('../config/db');
-const { createAuditLog } = require('../services/audit_log_service');
+const lifecycle = require('../services/item_lifecycle_service');
 const isAdmin = (u) => u && ['ADMIN', 'SUPER_ADMIN'].includes(u.role);
 const validOtp = (v) => typeof v === 'string' && /^\d{6}$/.test(v);
 
@@ -46,10 +46,7 @@ const lookupCollection = async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ message: 'OTP not found or expired' });
     if (rows.length > 1) return res.status(409).json({ message: 'OTP collision. Regenerate a code for this claim.' });
     const r = rows[0];
-    if (r.claim_status !== 'APPROVED' || r.item_type !== 'FOUND' ||
-        !['ACTIVE', 'MATCHED', 'CLAIM_PENDING'].includes(r.item_status)) {
-      return res.status(409).json({ message: 'Claim or item is not eligible for collection' });
-    }
+    await lifecycle.withCollectibleClaim(r.claim_id, async () => {});
     return res.json({ collection: {
       claim_id: r.claim_id, item_id: r.item_id,
       item_name: r.item_name, value_tier: r.value_tier,
@@ -58,8 +55,7 @@ const lookupCollection = async (req, res) => {
       claim_status: r.claim_status, expires_at: r.expired_at
     }});
   } catch (e) {
-    console.error('OTP collection lookup failed:', e);
-    return res.status(500).json({ message: 'Unable to look up collection' });
+    return lifecycle.respondError(res, e, 'Unable to look up collection');
   }
 };
 
@@ -71,51 +67,12 @@ const confirmCollection = async (req, res) => {
     return res.status(400).json({ message: 'Valid OTP and claim ID are required' });
   }
   if (!allowAttempt(req.user.user_id)) return res.status(429).json({ message: 'Too many attempts. Try again later.' });
-  const connection = await pool.getConnection();
   try {
-    await connection.beginTransaction();
-    const [claims] = await connection.query(
-      `SELECT c.claim_id, c.item_id, c.claim_status, i.item_type, i.status AS item_status
-       FROM claim c JOIN item i ON i.item_id = c.item_id
-       WHERE c.claim_id = ? FOR UPDATE`, [claimId]);
-    if (!claims.length) {
-      await connection.rollback();
-      return res.status(404).json({ message: 'Claim not found' });
-    }
-    const claim = claims[0];
-    if (claim.claim_status !== 'APPROVED' || claim.item_type !== 'FOUND' ||
-        !['ACTIVE', 'MATCHED', 'CLAIM_PENDING'].includes(claim.item_status)) {
-      await connection.rollback();
-      return res.status(409).json({ message: 'Claim or item is no longer available' });
-    }
-    const [otps] = await connection.query(
-      `SELECT otp_id FROM claim_otp WHERE claim_id = ? AND otp_code = ?
-         AND otp_status = 'ACTIVE' AND expired_at > NOW() FOR UPDATE`,
-      [claimId, otp]);
-    if (otps.length !== 1) {
-      await connection.rollback();
-      return res.status(400).json({ message: 'Invalid, expired, or ambiguous OTP' });
-    }
-    await connection.query(
-      `UPDATE claim_otp SET otp_status = 'USED', used_at = NOW() WHERE otp_id = ?`,
-      [otps[0].otp_id]);
-    await connection.query(`UPDATE claim SET claim_status = 'COLLECTED' WHERE claim_id = ?`, [claimId]);
-    // Existing project uses item.status = CLAIMED after successful collection.
-    await connection.query(`UPDATE item SET status = 'CLAIMED' WHERE item_id = ?`, [claim.item_id]);
-    await createAuditLog({
-      admin_id: req.user.user_id, item_id: claim.item_id, claim_id: claimId,
-      action_type: 'CLAIM_COLLECTED',
-      action_details: `Claim ${claimId} physically handed over after OTP verification.`,
-      connection
-    });
-    await connection.commit();
-    return res.json({ message: 'Collection completed successfully',
-      claim: { claim_id: claimId, claim_status: 'COLLECTED', item_id: claim.item_id, item_status: 'CLAIMED' } });
-  } catch (e) {
-    try { await connection.rollback(); } catch (_) {}
-    console.error('OTP collection confirmation failed:', e);
-    return res.status(500).json({ message: 'Unable to confirm collection. Check audit_log action_type compatibility.' });
-  } finally { connection.release(); }
+    const claim = await lifecycle.collect(claimId, otp, req.user.user_id);
+    return res.json({ message: 'Collection completed successfully', claim });
+  } catch (error) {
+    return lifecycle.respondError(res, error, 'Unable to confirm collection. Refresh before retrying.');
+  }
 };
 
 module.exports = { lookupCollection, confirmCollection };

@@ -6,7 +6,8 @@
 
 const pool = require('../config/db');
 const { createAuditLog } = require('../services/audit_log_service');
-const { triggerMatching } = require('../services/automatic_matching_service');
+const { triggerMatching, markImagePending, markImageReady } = require('../services/automatic_matching_service');
+const imageStorage = require('../services/image_storage_service');
 
 const cleanText = (value) =>
   typeof value === 'string' ? value.trim() : '';
@@ -179,15 +180,17 @@ const createItem = async (req, res) => {
           );
         }
       }
+      if (req.body.image_pending === true) markImagePending(result.insertId);
       await connection.commit();
     } catch (error) {
+      // Keep upload intent on an uncertain commit outcome; fail closed until retry.
       await connection.rollback();
       throw error;
     } finally {
       connection.release();
     }
 
-    if (publicationStatus === 'PUBLISHED') triggerMatching(result.insertId);
+    if (publicationStatus === 'PUBLISHED' && req.body.defer_matching !== true) triggerMatching(result.insertId);
 
     return res.status(201).json({
       message: 'Item reported successfully',
@@ -282,6 +285,20 @@ const sanitizeItemForViewer = (item, user) => {
   return safe;
 };
 
+async function attachImages(items, user) {
+  const visible = items.filter(item => canViewItem(item, user) &&
+    (isAdmin(user) || Number(item.reporter_id) === Number(user.user_id) || item.item_type !== 'FOUND' || item.value_tier !== 'HIGH'));
+  for (const item of items) item.images = [];
+  if (!visible.length) return;
+  const [images] = await pool.query(`SELECT image_id,item_id,image_role FROM item_image WHERE item_id IN (?)
+    ORDER BY (image_role='PRIMARY') DESC,image_id`, [visible.map(item => item.item_id)]);
+  for (const item of visible) {
+    item.images = images.filter(image => Number(image.item_id) === Number(item.item_id)).map(image => ({ ...image,
+      image_url: `/api/items/${item.item_id}/images/${image.image_id}` }));
+    item.image_url = item.images[0]?.image_url || null;
+  }
+}
+
 // =====================================================
 // GET ALL ITEMS
 // GET /api/items
@@ -311,6 +328,7 @@ const getAllItems = async (req, res) => {
       [req.user.user_id, isAdmin(req.user) ? 1 : 0]
     );
 
+    await attachImages(items, req.user);
     return res.status(200).json({
       message: 'Items retrieved successfully',
       count: items.length,
@@ -335,7 +353,10 @@ const getItemById = async (req, res) => {
 
     const [items] = await pool.query(
       `
-      SELECT i.*, c.category_name, u.name AS reporter_name
+      SELECT i.item_id,i.reporter_id,i.category_id,i.item_name,i.model_info,i.colour,i.description,
+             i.item_type,i.value_tier,i.status,i.publication_status,i.custody_status,i.location,i.storage_location,
+             i.event_date,i.reported_at,i.publication_reviewed_by,i.publication_reviewed_at,i.publication_review_note,
+             c.category_name,u.name AS reporter_name
       FROM item i
       JOIN user u ON i.reporter_id = u.user_id
       LEFT JOIN item_category c ON i.category_id = c.category_id
@@ -348,6 +369,7 @@ const getItemById = async (req, res) => {
       return res.status(404).json({ message: 'Item not found' });
     }
 
+    await attachImages(items, req.user);
     return res.status(200).json({
       message: 'Item retrieved successfully',
       item: sanitizeItemForViewer(items[0], req.user)
@@ -459,92 +481,78 @@ const updateItemValueTier = async (req, res) => {
 // =====================================================
 const uploadItemImage = async (req, res) => {
   const itemId = Number(req.params.id);
-  if (!req.file) {
-    return res.status(400).json({ message: 'Image file is required' });
-  }
-  if (!Number.isInteger(itemId) || itemId <= 0) {
-    return res.status(400).json({ message: 'Invalid item ID' });
-  }
-  if (!req.file.filename) {
-    return res.status(500).json({
-      message: 'Upload middleware must save the file on disk (filename missing)'
-    });
-  }
-
-  const connection = await pool.getConnection();
+  if (!Number.isSafeInteger(itemId) || itemId <= 0) return res.status(400).json({ message: 'Invalid item ID' });
+  let connection, imagePath, createdFile = false, commitStarted = false;
   try {
+    if (!req.file) return res.status(400).json({ message: 'Image file is required' });
+    imageStorage.validateImage(req.file);
+    imagePath = imageStorage.imageReference(itemId, req.file);
+    connection = await pool.getConnection();
     await connection.beginTransaction();
-    const [items] = await connection.query(
-      `SELECT item_id, reporter_id, status, value_tier, publication_status
-       FROM item WHERE item_id = ? FOR UPDATE`,
-      [itemId]
-    );
-
-    if (!items.length) {
-      await connection.rollback();
-      return res.status(404).json({ message: 'Item not found' });
-    }
-    const item = items[0];
+    const [[item]] = await connection.query(`SELECT item_id,reporter_id,status,value_tier,publication_status
+      FROM item WHERE item_id = ? FOR UPDATE`, [itemId]);
+    if (!item) throw Object.assign(new Error('Item not found'), { status: 404 });
     if (Number(item.reporter_id) !== Number(req.user.user_id) && !isAdmin(req.user)) {
-      await connection.rollback();
-      return res.status(403).json({
-        message: 'You are not allowed to upload images for this item'
-      });
+      throw Object.assign(new Error('You are not allowed to upload images for this item'), { status: 403 });
     }
     if (item.status !== 'ACTIVE' || item.publication_status === 'REJECTED') {
-      await connection.rollback();
-      return res.status(409).json({
-        message: 'Images cannot be changed for this item in its current state'
-      });
+      throw Object.assign(new Error('Images cannot be changed for this item in its current state'), { status: 409 });
     }
-
-    const [existingImages] = await connection.query(
-      'SELECT image_id FROM item_image WHERE item_id = ? LIMIT 1',
-      [itemId]
-    );
-    const imageRole = existingImages.length ? 'ADDITIONAL' : 'PRIMARY';
-    const imagePath = `uploads/${req.file.filename}`;
-
-    const [result] = await connection.query(
-      `INSERT INTO item_image (item_id, image_path, image_role)
-       VALUES (?, ?, ?)`,
-      [itemId, imagePath, imageRole]
-    );
-
+    const [images] = await connection.query('SELECT image_id,image_path,image_role FROM item_image WHERE item_id = ? ORDER BY image_id FOR UPDATE', [itemId]);
+    let image = images.find(row => row.image_path === imagePath);
+    createdFile = await imageStorage.storeImage(imagePath, req.file.buffer);
     let publicationStatus = item.publication_status;
-    // If new evidence is added to an approved HIGH report, require re-review.
-    if (item.value_tier === 'HIGH' && item.publication_status === 'PUBLISHED') {
-      publicationStatus = 'PENDING_REVIEW';
-      await connection.query(`
-        UPDATE item
-        SET publication_status = 'PENDING_REVIEW',
-            publication_reviewed_by = NULL,
-            publication_reviewed_at = NULL,
-            publication_review_note = NULL
-        WHERE item_id = ?
-      `, [itemId]);
+    if (!image) {
+      const role = images.length ? 'ADDITIONAL' : 'PRIMARY';
+      const [result] = await connection.query(`INSERT INTO item_image (item_id,image_path,image_role) VALUES (?,?,?)`, [itemId, imagePath, role]);
+      image = { image_id: result.insertId, image_path: imagePath, image_role: role };
+      if (item.value_tier === 'HIGH' && publicationStatus === 'PUBLISHED') {
+        publicationStatus = 'PENDING_REVIEW';
+        await connection.query(`UPDATE item SET publication_status = 'PENDING_REVIEW', publication_reviewed_by = NULL,
+          publication_reviewed_at = NULL, publication_review_note = NULL WHERE item_id = ?`, [itemId]);
+      }
     }
-
+    commitStarted = true;
     await connection.commit();
-    if (publicationStatus === 'PUBLISHED') triggerMatching(itemId);
-
-    return res.status(201).json({
-      message: 'Image uploaded successfully',
-      image: {
-        image_id: result.insertId,
-        item_id: itemId,
-        image_path: imagePath,
-        image_role: imageRole
-      },
-      publication_status: publicationStatus
-    });
+    markImageReady(itemId);
+    if (publicationStatus === 'PUBLISHED' && req.body?.defer_matching !== 'true') triggerMatching(itemId);
+    return res.status(201).json({ message: 'Image uploaded successfully',
+      image: { ...image, item_id: itemId, image_url: `/api/items/${itemId}/images/${image.image_id}` }, publication_status: publicationStatus });
   } catch (error) {
-    try { await connection.rollback(); } catch (_) {}
-    console.error('Upload item image error:', error);
-    return res.status(500).json({ message: 'Failed to upload image' });
-  } finally {
-    connection.release();
-  }
+    if (connection) { try { await connection.rollback(); } catch (_) {} }
+    // Unknown commit outcomes retain the file so an idempotent retry can recover.
+    if (createdFile && !commitStarted && connection) {
+      try {
+        // Reacquire the item lock after rollback before removing a file. A
+        // concurrent retry may already have committed a reference to it.
+        await connection.beginTransaction();
+        await connection.query('SELECT item_id FROM item WHERE item_id = ? FOR UPDATE', [itemId]);
+        const [references] = await connection.query('SELECT image_id FROM item_image WHERE item_id = ? AND image_path = ? FOR UPDATE', [itemId, imagePath]);
+        if (!references.length) await imageStorage.removeImage(imagePath);
+        await connection.commit();
+      } catch (_) { try { await connection.rollback(); } catch (_) {} }
+    }
+    if (!error.status) console.error('Upload item image error:', error.code || error.message);
+    return res.status(error.status || 500).json({ message: error.status ? error.message : 'Failed to upload image. Retry for the same report.' });
+  } finally { if (connection) connection.release(); }
+};
+
+const getItemImage = async (req, res) => {
+  const itemId = Number(req.params.id), imageId = Number(req.params.imageId);
+  if (![itemId, imageId].every(id => Number.isSafeInteger(id) && id > 0)) return res.status(400).json({ message: 'Invalid image ID' });
+  try {
+    const [[item]] = await pool.query('SELECT item_id,reporter_id,item_type,value_tier,status,publication_status FROM item WHERE item_id = ?', [itemId]);
+    const privileged = item && (isAdmin(req.user) || Number(item.reporter_id) === Number(req.user.user_id));
+    if (!item || !canViewItem(item, req.user) || (!privileged && item.item_type === 'FOUND' && item.value_tier === 'HIGH')) {
+      return res.status(404).json({ message: 'Image not found' });
+    }
+    const [[image]] = await pool.query('SELECT image_path FROM item_image WHERE image_id = ? AND item_id = ?', [imageId, itemId]);
+    if (!image) return res.status(404).json({ message: 'Image not found' });
+    const data = await imageStorage.readImage(image.image_path);
+    res.set({ 'Content-Type': data.mime, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; sandbox" });
+    return res.send(data.buffer);
+  } catch (_) { return res.status(404).json({ message: 'Image not found' }); }
 };
 
 // =====================================================
@@ -552,7 +560,7 @@ const uploadItemImage = async (req, res) => {
 // PATCH /api/items/:id/receive (ADMIN ONLY)
 // =====================================================
 const confirmItemReceived = async (req, res) => {
-  const connection = await pool.getConnection();
+  let connection;
 
   try {
     if (!isAdmin(req.user)) {
@@ -573,6 +581,7 @@ const confirmItemReceived = async (req, res) => {
       });
     }
 
+    connection = await pool.getConnection();
     await connection.beginTransaction();
 
     // 1. Lock item row
@@ -613,6 +622,18 @@ const confirmItemReceived = async (req, res) => {
       });
     }
 
+    // Locking item serializes receipt against collection, claim and disposal.
+    if (!['ACTIVE', 'MATCHED', 'CLAIM_PENDING'].includes(item.status)) {
+      await connection.rollback();
+      return res.status(409).json({ message: 'Unavailable items cannot be received.' });
+    }
+    const [disposals] = await connection.query(`SELECT disposal_id FROM disposal_record
+      WHERE item_id = ? AND disposal_status IN ('PENDING','COMPLETED') ORDER BY disposal_id FOR UPDATE`, [itemId]);
+    if (disposals.length) {
+      await connection.rollback();
+      return res.status(409).json({ message: 'Item has a pending or completed disposal; manual review is required.' });
+    }
+
     // 2. Prevent duplicate active retention records
     const [existingRetention] = await connection.query(
       `
@@ -620,7 +641,7 @@ const confirmItemReceived = async (req, res) => {
       FROM retention_record
       WHERE item_id = ?
         AND retention_status IN ('ACTIVE', 'DUE')
-      LIMIT 1
+      ORDER BY retention_id FOR UPDATE
       `,
       [itemId]
     );
@@ -650,7 +671,7 @@ const confirmItemReceived = async (req, res) => {
     }
 
     const retentionDays = Number(settings[0].setting_value);
-    if (!Number.isInteger(retentionDays) || retentionDays < 1) {
+    if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) {
       await connection.rollback();
       return res.status(500).json({
         message: 'Invalid retention period configuration'
@@ -658,14 +679,17 @@ const confirmItemReceived = async (req, res) => {
     }
 
     // 4. Update physical custody
-    await connection.query(
+    const [received] = await connection.query(
       `
       UPDATE item
       SET custody_status = 'RECEIVED', storage_location = ?
-      WHERE item_id = ?
+      WHERE item_id = ? AND custody_status = 'NOT_RECEIVED'
+        AND status IN ('ACTIVE','MATCHED','CLAIM_PENDING')
       `,
       [storageLocation, itemId]
     );
+
+    if (received.affectedRows !== 1) throw new Error('Item state changed during receipt');
 
     // 5. Start retention
     const [retentionResult] = await connection.query(
@@ -704,8 +728,9 @@ const confirmItemReceived = async (req, res) => {
     // 7. Fetch newly created retention record
     const [retentionRecords] = await connection.query(
       `
-      SELECT retention_id, item_id, retention_start_date,
-             retention_due_date, retention_status
+      SELECT retention_id, item_id,
+             DATE_FORMAT(retention_start_date,'%Y-%m-%d') AS retention_start_date,
+             DATE_FORMAT(retention_due_date,'%Y-%m-%d') AS retention_due_date, retention_status
       FROM retention_record
       WHERE retention_id = ?
       `,
@@ -727,7 +752,7 @@ const confirmItemReceived = async (req, res) => {
     });
   } catch (error) {
     try {
-      await connection.rollback();
+      if (connection) await connection.rollback();
     } catch (_) {}
 
     console.error('Confirm item received error:', error);
@@ -736,7 +761,7 @@ const confirmItemReceived = async (req, res) => {
       error: error.message
     });
   } finally {
-    connection.release();
+    if (connection) connection.release();
   }
 };
 
@@ -747,6 +772,7 @@ module.exports = {
   getItemById,
   updateItemValueTier,
   uploadItemImage,
+  getItemImage,
   confirmItemReceived
 };
 

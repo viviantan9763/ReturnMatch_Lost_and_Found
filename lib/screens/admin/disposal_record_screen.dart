@@ -11,8 +11,7 @@ class DisposalRecordScreen extends StatefulWidget {
   const DisposalRecordScreen({super.key});
 
   @override
-  State<DisposalRecordScreen> createState() =>
-      _DisposalRecordScreenState();
+  State<DisposalRecordScreen> createState() => _DisposalRecordScreenState();
 }
 
 class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
@@ -24,6 +23,7 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
   String? _errorMessage;
   String _selectedStatus = 'ALL';
   String _searchQuery = '';
+  final Set<int> _busyRecords = {};
   List<Map<String, dynamic>> _records = [];
 
   @override
@@ -105,8 +105,9 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
   }
 
   int _count(String status) => _records
-      .where((record) =>
-          _text(record['disposal_status']).toUpperCase() == status)
+      .where(
+        (record) => _text(record['disposal_status']).toUpperCase() == status,
+      )
       .length;
 
   @override
@@ -146,10 +147,7 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
             color: AppColors.adminSoft,
             borderRadius: BorderRadius.circular(9),
           ),
-          child: const Icon(
-            Icons.delete_outline_rounded,
-            color: adminBlue,
-          ),
+          child: const Icon(Icons.delete_outline_rounded, color: adminBlue),
         ),
         const SizedBox(width: 14),
         const Expanded(
@@ -168,10 +166,7 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
               SizedBox(height: 4),
               Text(
                 'Process pending disposal records and preserve disposal history.',
-                style: TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 13,
-                ),
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
               ),
             ],
           ),
@@ -218,8 +213,8 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
         final columns = constraints.maxWidth >= 900
             ? 4
             : constraints.maxWidth >= 520
-                ? 2
-                : 1;
+            ? 2
+            : 1;
 
         return GridView.count(
           crossAxisCount: columns,
@@ -234,12 +229,7 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
     );
   }
 
-  Widget _summaryCard(
-    String title,
-    String value,
-    IconData icon,
-    Color color,
-  ) {
+  Widget _summaryCard(String title, String value, IconData icon, Color color) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -356,9 +346,7 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
 
   Widget _content() {
     if (_isLoading) {
-      return const Center(
-        child: CircularProgressIndicator(color: adminBlue),
-      );
+      return const Center(child: CircularProgressIndicator(color: adminBlue));
     }
 
     if (_errorMessage != null) {
@@ -390,9 +378,8 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.only(bottom: 24),
         itemCount: _filteredRecords.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 10),
-        itemBuilder: (context, index) =>
-            _recordCard(_filteredRecords[index]),
+        separatorBuilder: (_, _) => const SizedBox(height: 10),
+        itemBuilder: (context, index) => _recordCard(_filteredRecords[index]),
       ),
     );
   }
@@ -461,10 +448,7 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
                 'Method',
                 _formatMethod(_fallback(record['disposal_method'], '—')),
               ),
-              _detail(
-                'Processed By',
-                _fallback(record['admin_name'], '—'),
-              ),
+              _detail('Processed By', _fallback(record['admin_name'], '—')),
               _detail(
                 'Disposal Date',
                 _formatDateTime(record['disposal_date']),
@@ -498,6 +482,16 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
               ),
             ),
           ],
+          if (record['lifecycle_block_reason'] != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              _text(record['lifecycle_block_reason']),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 11.5,
+              ),
+            ),
+          ],
           if (status == 'PENDING' || status == 'COMPLETED') ...[
             const SizedBox(height: 14),
             Align(
@@ -508,7 +502,13 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
                 children: [
                   if (status == 'PENDING') ...[
                     OutlinedButton.icon(
-                      onPressed: () => _cancelDisposal(record),
+                      onPressed:
+                          record['can_update'] != true ||
+                              _busyRecords.contains(
+                                int.tryParse(_text(record['disposal_id'])),
+                              )
+                          ? null
+                          : () => _cancelDisposal(record),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.danger,
                         side: const BorderSide(color: AppColors.danger),
@@ -517,7 +517,13 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
                       label: const Text('Cancel'),
                     ),
                     FilledButton.icon(
-                      onPressed: () => _completeDisposal(record),
+                      onPressed:
+                          record['can_update'] != true ||
+                              _busyRecords.contains(
+                                int.tryParse(_text(record['disposal_id'])),
+                              )
+                          ? null
+                          : () => _completeDisposal(record),
                       style: FilledButton.styleFrom(
                         backgroundColor: adminBlue,
                         foregroundColor: Colors.white,
@@ -528,7 +534,13 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
                   ],
                   if (status == 'COMPLETED')
                     OutlinedButton.icon(
-                      onPressed: () => _reverseDisposal(record),
+                      onPressed:
+                          record['can_reverse'] != true ||
+                              _busyRecords.contains(
+                                int.tryParse(_text(record['disposal_id'])),
+                              )
+                          ? null
+                          : () => _reverseDisposal(record),
                       icon: const Icon(Icons.restore_rounded, size: 17),
                       label: const Text('Restore to Retention'),
                     ),
@@ -541,6 +553,22 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
     );
   }
 
+  // Wait for the closing animation before disposing dialog text controllers.
+  Future<bool?> _showLifecycleDialog({
+    required BuildContext context,
+    required WidgetBuilder builder,
+    bool barrierDismissible = true,
+  }) async {
+    final route = DialogRoute<bool>(
+      context: context,
+      builder: builder,
+      barrierDismissible: barrierDismissible,
+    );
+    final result = await Navigator.of(context).push(route);
+    await route.completed;
+    return result;
+  }
+
   Future<void> _completeDisposal(Map<String, dynamic> record) async {
     final disposalId = int.tryParse(_text(record['disposal_id']));
     if (disposalId == null) {
@@ -548,167 +576,182 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
       return;
     }
 
-    String method = 'RECYCLING';
-    final remarksController = TextEditingController();
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Complete Disposal'),
-              content: SizedBox(
-                width: 460,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _fallback(record['item_name'], 'Item'),
-                      style: const TextStyle(
-                        color: textDark,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 15),
-                    DropdownButtonFormField<String>(
-                      initialValue: method,
-                      decoration: const InputDecoration(
-                        labelText: 'Disposal Method',
-                        border: OutlineInputBorder(),
-                      ),
-                      items: const [
-                        DropdownMenuItem(
-                          value: 'RECYCLING',
-                          child: Text('Recycling'),
-                        ),
-                        DropdownMenuItem(
-                          value: 'DONATION',
-                          child: Text('Donation'),
-                        ),
-                        DropdownMenuItem(
-                          value: 'GENERAL_DISPOSAL',
-                          child: Text('General Disposal'),
-                        ),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) {
-                          setDialogState(() => method = value);
-                        }
-                      },
-                    ),
-                    const SizedBox(height: 13),
-                    TextField(
-                      controller: remarksController,
-                      maxLines: 3,
-                      decoration: const InputDecoration(
-                        labelText: 'Remarks (optional)',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext, false),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: adminBlue,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: () => Navigator.pop(dialogContext, true),
-                  child: const Text('Confirm Completion'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    if (confirmed != true) {
-      remarksController.dispose();
+    if (_busyRecords.contains(disposalId) || record['can_update'] != true) {
       return;
     }
+    String method = 'RECYCLING';
+    final remarksController = TextEditingController();
+    setState(() => _busyRecords.add(disposalId));
+    try {
+      final confirmed = await _showLifecycleDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) {
+          return StatefulBuilder(
+            builder: (context, setDialogState) {
+              return AlertDialog(
+                title: const Text('Complete Disposal'),
+                content: SizedBox(
+                  width: 460,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _fallback(record['item_name'], 'Item'),
+                        style: const TextStyle(
+                          color: textDark,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 15),
+                      DropdownButtonFormField<String>(
+                        initialValue: method,
+                        decoration: const InputDecoration(
+                          labelText: 'Disposal Method',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'RECYCLING',
+                            child: Text('Recycling'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'DONATION',
+                            child: Text('Donation'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'GENERAL_DISPOSAL',
+                            child: Text('General Disposal'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setDialogState(() => method = value);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 13),
+                      TextField(
+                        controller: remarksController,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Remarks (optional)',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogContext, false),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: adminBlue,
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () => Navigator.pop(dialogContext, true),
+                    child: const Text('Confirm Completion'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
 
-    final remarks = remarksController.text.trim();
-    remarksController.dispose();
+      if (confirmed != true || !mounted) {
+        remarksController.dispose();
+        return;
+      }
 
-    await _updateDisposalStatus(
-      disposalId: disposalId,
-      status: 'COMPLETED',
-      method: method,
-      remarks: remarks,
-    );
+      final remarks = remarksController.text.trim();
+      remarksController.dispose();
+
+      await _updateDisposalStatus(
+        disposalId: disposalId,
+        status: 'COMPLETED',
+        method: method,
+        remarks: remarks,
+      );
+    } finally {
+      if (mounted) setState(() => _busyRecords.remove(disposalId));
+    }
   }
 
   Future<void> _cancelDisposal(Map<String, dynamic> record) async {
     final disposalId = int.tryParse(_text(record['disposal_id']));
     if (disposalId == null) return;
 
-    final controller = TextEditingController();
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Cancel Disposal Record?'),
-          content: SizedBox(
-            width: 430,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'This will mark disposal #$disposalId as CANCELLED. The audit history will remain unchanged.',
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: controller,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: 'Remarks (optional)',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Keep Pending'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.danger,
-                foregroundColor: Colors.white,
-              ),
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Cancel Disposal'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true) {
-      controller.dispose();
+    if (_busyRecords.contains(disposalId) || record['can_update'] != true) {
       return;
     }
+    final controller = TextEditingController();
+    setState(() => _busyRecords.add(disposalId));
+    try {
+      final confirmed = await _showLifecycleDialog(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('Cancel Disposal Record?'),
+            content: SizedBox(
+              width: 430,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'This will mark disposal #$disposalId as CANCELLED. The audit history will remain unchanged.',
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: controller,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      labelText: 'Remarks (optional)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Keep Pending'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.danger,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Cancel Disposal'),
+              ),
+            ],
+          );
+        },
+      );
 
-    final remarks = controller.text.trim();
-    controller.dispose();
+      if (confirmed != true || !mounted) {
+        controller.dispose();
+        return;
+      }
 
-    await _updateDisposalStatus(
-      disposalId: disposalId,
-      status: 'CANCELLED',
-      remarks: remarks,
-    );
+      final remarks = controller.text.trim();
+      controller.dispose();
+
+      await _updateDisposalStatus(
+        disposalId: disposalId,
+        status: 'CANCELLED',
+        remarks: remarks,
+      );
+    } finally {
+      if (mounted) setState(() => _busyRecords.remove(disposalId));
+    }
   }
 
   Future<void> _updateDisposalStatus({
@@ -719,16 +762,14 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
   }) async {
     try {
       final response = await http.patch(
-        Uri.parse(
-          '${AuthService.baseUrl}/disposals/$disposalId/status',
-        ),
+        Uri.parse('${AuthService.baseUrl}/disposals/$disposalId/status'),
         headers: {
           ...AuthService.authenticatedHeaders(),
           'Content-Type': 'application/json',
         },
         body: jsonEncode({
           'status': status,
-          if (method != null) 'disposal_method': method,
+          'disposal_method': ?method,
           if (remarks != null && remarks.isNotEmpty) 'remarks': remarks,
         }),
       );
@@ -759,103 +800,137 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
     final disposalId = int.tryParse(_text(record['disposal_id']));
     if (disposalId == null) return;
 
-    final controller = TextEditingController();
-    final confirmed = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Restore to Retention?'),
-          content: SizedBox(
-            width: 460,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Use this only when the disposal was marked completed by mistake and the physical item is still held by the Lost & Found Office. A new retention record will be created; the old history will not be overwritten.',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                    height: 1.45,
-                  ),
-                ),
-                const SizedBox(height: 15),
-                TextField(
-                  controller: controller,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: 'Reason for reversal *',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: adminBlue,
-                foregroundColor: Colors.white,
-              ),
-              onPressed: () {
-                if (controller.text.trim().isEmpty) {
-                  _showMessage(
-                    'Reason for reversal is required.',
-                    isError: true,
-                  );
-                  return;
-                }
-                Navigator.pop(dialogContext, true);
-              },
-              child: const Text('Restore Item'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true) {
-      controller.dispose();
+    if (_busyRecords.contains(disposalId) || record['can_reverse'] != true) {
       return;
     }
-
-    final reason = controller.text.trim();
-    controller.dispose();
-
+    final controller = TextEditingController();
+    final storageController = TextEditingController();
+    var physicallyHeld = false;
+    setState(() => _busyRecords.add(disposalId));
     try {
-      final response = await http.post(
-        Uri.parse(
-          '${AuthService.baseUrl}/disposals/$disposalId/reverse',
+      final confirmed = await _showLifecycleDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              title: const Text('Restore to Retention?'),
+              scrollable: true,
+              content: SizedBox(
+                width: 460,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Use this only when the disposal was marked completed by mistake and the physical item is still held by the Lost & Found Office. A new retention record will be created; the old history will not be overwritten.',
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        height: 1.45,
+                      ),
+                    ),
+                    const SizedBox(height: 15),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text(
+                        'I confirm the physical item is still held by the office.',
+                      ),
+                      value: physicallyHeld,
+                      onChanged: (value) =>
+                          setDialogState(() => physicallyHeld = value == true),
+                    ),
+                    TextField(
+                      controller: storageController,
+                      decoration: const InputDecoration(
+                        labelText: 'Storage location *',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 15),
+                    TextField(
+                      controller: controller,
+                      maxLines: 3,
+                      decoration: const InputDecoration(
+                        labelText: 'Reason for reversal *',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: adminBlue,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: () {
+                    if (controller.text.trim().isEmpty ||
+                        storageController.text.trim().isEmpty ||
+                        !physicallyHeld) {
+                      _showMessage(
+                        'Confirm physical custody and enter the reason and storage location.',
+                        isError: true,
+                      );
+                      return;
+                    }
+                    Navigator.pop(dialogContext, true);
+                  },
+                  child: const Text('Restore Item'),
+                ),
+              ],
+            );
+          },
         ),
-        headers: {
-          ...AuthService.authenticatedHeaders(),
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({'reason': reason}),
       );
 
-      if (response.statusCode != 200) {
-        _showMessage(
-          _extractMessage(
-            response,
-            fallback: 'Failed to reverse disposal.',
-          ),
-          isError: true,
-        );
+      if (confirmed != true || !mounted) {
+        controller.dispose();
+        storageController.dispose();
         return;
       }
 
-      _showMessage(
-        'Disposal reversed and a new retention period was created.',
-      );
-      await _loadRecords();
-    } catch (error) {
-      _showMessage('Unable to connect to server: $error', isError: true);
+      final reason = controller.text.trim();
+      final storage = storageController.text.trim();
+      storageController.dispose();
+      controller.dispose();
+
+      try {
+        final response = await http.post(
+          Uri.parse('${AuthService.baseUrl}/disposals/$disposalId/reverse'),
+          headers: {
+            ...AuthService.authenticatedHeaders(),
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'reason': reason,
+            'storage_location': storage,
+            'confirm_item_still_held': physicallyHeld,
+          }),
+        );
+
+        if (response.statusCode != 200) {
+          _showMessage(
+            _extractMessage(response, fallback: 'Failed to reverse disposal.'),
+            isError: true,
+          );
+          return;
+        }
+
+        _showMessage(
+          'Disposal reversed and a new retention period was created.',
+        );
+        await _loadRecords();
+      } catch (error) {
+        _showMessage('Unable to connect to server: $error', isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busyRecords.remove(disposalId));
     }
   }
 
@@ -935,10 +1010,7 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
                   fontSize: 12,
                 ),
               ),
-              if (action != null) ...[
-                const SizedBox(height: 12),
-                action,
-              ],
+              if (action != null) ...[const SizedBox(height: 12), action],
             ],
           ),
         ),
@@ -983,9 +1055,11 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
         .replaceAll('_', ' ')
         .toLowerCase()
         .split(' ')
-        .map((word) => word.isEmpty
-            ? word
-            : '${word[0].toUpperCase()}${word.substring(1)}')
+        .map(
+          (word) => word.isEmpty
+              ? word
+              : '${word[0].toUpperCase()}${word.substring(1)}',
+        )
         .join(' ');
   }
 
@@ -996,7 +1070,7 @@ class _DisposalRecordScreenState extends State<DisposalRecordScreen> {
 
   static String _formatDateTime(dynamic value) {
     if (value == null) return '—';
-    final parsed = DateTime.tryParse(value.toString());
+    final parsed = DateTime.tryParse(value.toString())?.toLocal();
     if (parsed == null) return value.toString();
     return '${parsed.day.toString().padLeft(2, '0')}/'
         '${parsed.month.toString().padLeft(2, '0')}/'

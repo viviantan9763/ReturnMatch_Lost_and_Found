@@ -11,6 +11,7 @@ const {
   getItemById,
   updateItemValueTier,
   uploadItemImage,
+  getItemImage,
   confirmItemReceived
 } = require('../controllers/item_controller');
 
@@ -29,7 +30,13 @@ router.post('/', createItem);
 router.get('/', getAllItems);
 router.get('/:id', getItemById);
 
-router.post('/:id/images', upload.single('image'), uploadItemImage);
+router.post('/:id/images', (req, res, next) => {
+  upload.single('image')(req, res, error => {
+    if (error) return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ message: error.message });
+    next();
+  });
+}, uploadItemImage);
+router.get('/:id/images/:imageId', getItemImage);
 router.patch('/:id/publication', reviewHighValueReport); // ADMIN only
 router.patch('/:id/value-tier', updateItemValueTier);   // ADMIN only
 router.patch('/:id/receive', confirmItemReceived);     // ADMIN only

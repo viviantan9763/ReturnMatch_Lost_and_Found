@@ -3,9 +3,12 @@ const pool = require('../config/db');
 const { runMatchingForItem } = require('../services/automatic_matching_service');
 const isAdmin = u => u && ['ADMIN','SUPER_ADMIN'].includes(u.role);
 
+const MATCH_THRESHOLD = Number(process.env.MATCH_THRESHOLD || 0.72);
 const PUBLIC = `lost.publication_status='PUBLISHED' AND found.publication_status='PUBLISHED'
  AND lost.status IN ('ACTIVE','MATCHED','CLAIM_PENDING')
- AND found.status IN ('ACTIVE','MATCHED','CLAIM_PENDING')`;
+ AND found.status IN ('ACTIVE','MATCHED','CLAIM_PENDING')
+ AND NOT EXISTS (SELECT 1 FROM disposal_record d WHERE d.item_id IN (lost.item_id,found.item_id) AND d.disposal_status IN ('PENDING','COMPLETED'))
+ AND (mr.match_status <> 'SUGGESTED' OR mr.overall_similarity >= ${MATCH_THRESHOLD})`;
 
 const getMyMatchSuggestions = async (req,res) => {
   try {
@@ -65,6 +68,8 @@ const runItemMatching = async (req,res) => {
     if (!isAdmin(req.user) && Number(item.reporter_id)!==Number(req.user.user_id))
       return res.status(403).json({message:'Not allowed to match this item'});
     const result=await runMatchingForItem(id);
+    if (result.skipped_reason === 'image_upload_pending') return res.status(409).json({message:'Finish uploading this report image before matching.',result});
+    if (result.errors > 0) return res.status(503).json({message:'Report saved, but matching is incomplete. Retry matching for this report.',result});
     return res.json({message:'Matching attempt completed',result});
   } catch(e) { console.error('Run matching error',e); return res.status(503).json({message:'Matching service unavailable'}); }
 };

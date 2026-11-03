@@ -16,6 +16,7 @@ import 'package:http_parser/http_parser.dart';
 import '../../constants/app_colors.dart';
 
 import '../../services/auth_service.dart';
+import '../../services/report_submission_service.dart';
 import '../../widgets/student/student_shell.dart';
 
 class ReportFoundScreen extends StatefulWidget {
@@ -109,6 +110,7 @@ class _ReportFoundScreenState
   bool _isLoadingCategories = true;
 
   bool _isSubmitting = false;
+  ReportSubmission _submission = ReportSubmission();
   bool _isAnalyzing = false;
 
   // Actual result from Node.js -> FastAPI (never hard-coded).
@@ -392,8 +394,8 @@ class _ReportFoundScreenState
       return;
     }
 
-    if (bytes.length > 10 * 1024 * 1024) {
-      _showMessage('Image is too large. Please choose an image under 10 MB.');
+    if (bytes.length > 5 * 1024 * 1024) {
+      _showMessage('Image is too large. Please choose an image under 5 MB.');
       return;
     }
 
@@ -539,133 +541,8 @@ class _ReportFoundScreenState
 
   // =========================================================
 
-  Future<bool> _uploadImage(
-
-    int itemId,
-
-  ) async {
-
-    if (_selectedImage == null ||
-
-        _selectedImageBytes == null) {
-
-      return true;
-
-    }
-
-    try {
-
-      final mimeType = lookupMimeType(
-
-        _selectedImage!.name,
-
-        headerBytes:
-
-            _selectedImageBytes,
-
-      );
-
-      if (mimeType == null) {
-
-        debugPrint(
-
-          'Unable to detect image MIME type',
-
-        );
-
-        return false;
-
-      }
-
-      final request =
-
-          http.MultipartRequest(
-
-        'POST',
-
-        Uri.parse(
-
-          '${AuthService.baseUrl}/items/$itemId/images',
-
-        ),
-
-      );
-
-      request.headers['Authorization'] =
-
-          'Bearer ${AuthService.authToken}';
-
-      request.files.add(
-
-        http.MultipartFile.fromBytes(
-
-          'image',
-
-          _selectedImageBytes!,
-
-          filename:
-
-              _selectedImage!.name,
-
-          contentType:
-
-              MediaType.parse(
-
-            mimeType,
-
-          ),
-
-        ),
-
-      );
-
-      final streamedResponse =
-
-          await request.send();
-
-      final response =
-
-          await http.Response.fromStream(
-
-        streamedResponse,
-
-      );
-
-      debugPrint(
-
-        'Image upload status: ${response.statusCode}',
-
-      );
-
-      debugPrint(
-
-        'Image upload response: ${response.body}',
-
-      );
-
-      return response.statusCode == 201;
-
-    } catch (error) {
-
-      debugPrint(
-
-        'Image upload error: $error',
-
-      );
-
-      return false;
-
-    }
-
-  }
-
-  // =========================================================
-
-  // SUBMIT FOUND ITEM
-
-  // =========================================================
-
   Future<void> _submitFoundItem() async {
+    if (_isSubmitting || _isAnalyzing) return;
 
     final itemName =
 
@@ -714,20 +591,6 @@ class _ReportFoundScreenState
       _showMessage(
 
         'Please select an item category.',
-
-      );
-
-      return;
-
-    }
-
-    if (modelInfo.isEmpty) {
-
-      _showMessage(
-
-        'Please enter the exact or approximate model. '
-
-        'If you are unsure, enter "Not Sure".',
 
       );
 
@@ -812,34 +675,7 @@ class _ReportFoundScreenState
     });
 
     try {
-
-      // =====================================================
-
-      // STEP 1: CREATE FOUND ITEM
-
-      //
-
-      // Student does NOT send value_tier.
-
-      // Backend determines HIGH / MEDIUM from category.
-
-      // =====================================================
-
-      final response =
-
-          await http.post(
-
-        Uri.parse(
-
-          '${AuthService.baseUrl}/items',
-
-        ),
-
-        headers:
-
-            AuthService.authenticatedHeaders(),
-
-        body: jsonEncode({
+      await _submission.submit({
 
           'category_id':
 
@@ -885,137 +721,19 @@ class _ReportFoundScreenState
 
               formattedDate,
 
-        }),
-
-      );
-
-      Map<String, dynamic> responseData = {};
-
-      if (response.body.isNotEmpty) {
-
-        try {
-
-          responseData =
-
-              jsonDecode(
-
-            response.body,
-
-          ) as Map<String, dynamic>;
-
-        } catch (_) {
-
-          responseData = {};
-
-        }
-
-      }
-
+        }, imageBytes: _selectedImageBytes, imageName: _selectedImage?.name);
       if (!mounted) return;
-
-      if (response.statusCode == 201) {
-
-        final itemData =
-
-            responseData['item']
-
-                as Map<String, dynamic>?;
-
-        final dynamic rawItemId =
-
-            itemData?['item_id'];
-
-        final int? itemId =
-
-            rawItemId is int
-
-                ? rawItemId
-
-                : int.tryParse(
-
-                    rawItemId
-
-                            ?.toString() ??
-
-                        '',
-
-                  );
-
-        if (itemId == null) {
-
-          _showMessage(
-
-            'Item was created, but item ID '
-
-            'was not returned.',
-
-          );
-
-          return;
-
-        }
-
-        // ===================================================
-
-        // STEP 2: UPLOAD IMAGE
-
-        // ===================================================
-
-        final imageUploaded =
-
-            await _uploadImage(
-
-          itemId,
-
-        );
-
-        if (!mounted) return;
-
-        if (imageUploaded) {
-
-          _showMessage(
-
-            _selectedImage == null
-
-                ? 'Found item reported successfully.'
-
-                : 'Found item and image submitted successfully.',
-
-          );
-
-          _clearForm();
-
-        } else {
-
-          _showMessage(
-
-            'Item was reported, but image upload failed.',
-
-          );
-
-        }
-
-      } else {
-
-        _showMessage(
-
-          responseData['message']
-
-                  ?.toString() ??
-
-              'Failed to submit found item.',
-
-        );
-
-      }
-
+      _showMessage(_submission.publicationStatus == 'PENDING_REVIEW'
+          ? 'Report saved. This HIGH-value report awaits admin publication review.'
+          : 'Report submitted successfully. Check Home for match recommendations.');
+      _clearForm();
     } catch (error) {
 
       if (!mounted) return;
 
       _showMessage(
 
-        'Connection error: $error',
+        error.toString().replaceFirst('Exception: ', ''),
 
       );
 
@@ -1300,6 +1018,7 @@ class _ReportFoundScreenState
   // =========================================================
 
   void _clearForm() {
+    _submission = ReportSubmission();
 
     _itemNameController.clear();
 
@@ -1441,7 +1160,7 @@ class _ReportFoundScreenState
 
               label:
 
-                  'Model / Approximate Model *',
+                  'Model / Approximate Model (optional)',
 
               hint:
 

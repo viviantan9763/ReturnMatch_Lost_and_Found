@@ -15,6 +15,17 @@ function loadController(name, pool) {
     ['module', 'require', 'console'], { filename });
   evaluate(module, (dependency) => {
     if (dependency === '../config/db') return pool;
+    if (dependency === '../services/item_lifecycle_service') {
+      const service = { exports: {} };
+      const source = path.resolve(__dirname, '../services/item_lifecycle_service.js');
+      vm.compileFunction(fs.readFileSync(source, 'utf8'), ['module', 'require'], { filename: source })(service,
+        name => {
+          if (name === '../config/db') return pool;
+          if (name === './audit_log_service') return { async createAuditLog() {} };
+          throw new Error(`Unexpected service dependency: ${name}`);
+        });
+      return service.exports;
+    }
     if (dependency === '../controllers/otp_controller') return {};
     return localRequire(dependency);
   }, { error() {} });
@@ -28,9 +39,9 @@ const submitted = [
 ];
 
 function fixture({ tier = 'HIGH', status = 'PENDING', claimantId = 7,
-  questionsMissing = false, failInsert = false } = {}) {
+  questionsMissing = false, failInsert = false, itemStatus = 'ACTIVE', disposalStatus = null } = {}) {
   const item = { item_id: 55, item_name: 'Synthetic item', item_type: 'FOUND',
-    reporter_id: 8, publication_status: 'PUBLISHED', status: 'ACTIVE', value_tier: tier };
+    reporter_id: 8, publication_status: 'PUBLISHED', status: itemStatus, value_tier: tier };
   const questions = [
     { question_no: 1, question_text: 'What is inside the hidden pocket?', answer_hash: digest('synthetic contents') },
     { question_no: 2, question_text: 'What is the concealed engraving?', answer_hash: digest('synthetic engraving') }
@@ -54,6 +65,7 @@ function fixture({ tier = 'HIGH', status = 'PENDING', claimantId = 7,
             ['PENDING', 'UNDER_REVIEW', 'VERIFICATION_REQUIRED', 'APPROVED'].includes(claim.claim_status)
             : ['APPROVED', 'COLLECTED'].includes(claim.claim_status)))];
       }
+      if (/FROM disposal_record/.test(flat)) return [disposalStatus ? [{ disposal_id: 1, disposal_status: disposalStatus }] : []];
       if (/FROM item WHERE item_id/.test(flat)) return [[item]];
       if (/FROM claim c JOIN item i/.test(flat)) {
         const claim = state.claims.find(claim => claim.claim_id === Number(parameters[0]));
@@ -233,3 +245,20 @@ test('terminal item cannot accept ownership answers', async () => {
   assert.equal((await call(f.security.submitSecurityAnswers, { body: { answers: submitted } })).statusCode, 409);
   assert.equal(f.state.answers.length, 0);
 });
+
+for (const itemStatus of ['EXPIRED', 'CLAIMED', 'DISPOSED']) {
+  test(`claim creation rejects ${itemStatus} without inserting`, async () => {
+    const f = fixture({ itemStatus });
+    assert.equal((await call(f.claims.createClaim, { body: { item_id: 55 } })).statusCode, 400);
+    assert.equal(f.state.claims.length, 0);
+    assert.equal(f.state.commits, 0);
+    assert.equal(f.state.rollbacks, 1);
+  });
+}
+for (const disposalStatus of ['PENDING', 'COMPLETED']) {
+  test(`legacy ACTIVE item with ${disposalStatus} disposal cannot be claimed`, async () => {
+    const f = fixture({ disposalStatus });
+    assert.equal((await call(f.claims.createClaim, { body: { item_id: 55 } })).statusCode, 409);
+    assert.equal(f.state.claims.length, 0);
+  });
+}

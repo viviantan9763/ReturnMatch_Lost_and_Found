@@ -233,7 +233,12 @@ for (const role of ['ADMIN', 'SUPER_ADMIN']) {
         async beginTransaction() {}, async commit() {}, async rollback() {}, release() {}
       };
       const pool = { ...connection, async getConnection() { return connection; } };
+      const lifecycle = loadModule('services/item_lifecycle_service.js', {
+        '../config/db': pool,
+        './audit_log_service': { async createAuditLog() {} }
+      });
       const controller = loadModule(`controllers/${file}`, {
+        '../services/item_lifecycle_service': lifecycle,
         '../config/db': pool,
         '../services/audit_log_service': { async createAuditLog() {} },
         '../services/notification_service': { async createNotification() {} },

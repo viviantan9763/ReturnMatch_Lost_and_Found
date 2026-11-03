@@ -11,8 +11,7 @@ class RetentionMonitorScreen extends StatefulWidget {
   const RetentionMonitorScreen({super.key});
 
   @override
-  State<RetentionMonitorScreen> createState() =>
-      _RetentionMonitorScreenState();
+  State<RetentionMonitorScreen> createState() => _RetentionMonitorScreenState();
 }
 
 class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
@@ -25,6 +24,7 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
   String _selectedStatus = 'ALL';
   String _searchQuery = '';
   int _newlyDueCount = 0;
+  final Set<int> _busyItems = {};
 
   List<Map<String, dynamic>> _records = [];
   List<Map<String, dynamic>> _disposals = [];
@@ -99,9 +99,8 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
       setState(() {
         _records = records;
         _disposals = disposals;
-        _newlyDueCount = int.tryParse(
-              retentionBody['newly_due_count']?.toString() ?? '',
-            ) ??
+        _newlyDueCount =
+            int.tryParse(retentionBody['newly_due_count']?.toString() ?? '') ??
             0;
         _isLoading = false;
       });
@@ -138,8 +137,9 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
   }
 
   int _count(String status) => _records
-      .where((record) =>
-          _text(record['retention_status']).toUpperCase() == status)
+      .where(
+        (record) => _text(record['retention_status']).toUpperCase() == status,
+      )
       .length;
 
   Map<String, dynamic>? _activeDisposalForItem(dynamic itemId) {
@@ -195,10 +195,7 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
             color: AppColors.adminSoft,
             borderRadius: BorderRadius.circular(9),
           ),
-          child: const Icon(
-            Icons.schedule_outlined,
-            color: adminBlue,
-          ),
+          child: const Icon(Icons.schedule_outlined, color: adminBlue),
         ),
         const SizedBox(width: 14),
         const Expanded(
@@ -217,10 +214,7 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
               SizedBox(height: 4),
               Text(
                 'Track physically received items through their retention lifecycle.',
-                style: TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 13,
-                ),
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
               ),
             ],
           ),
@@ -267,8 +261,8 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
         final columns = constraints.maxWidth >= 900
             ? 4
             : constraints.maxWidth >= 520
-                ? 2
-                : 1;
+            ? 2
+            : 1;
 
         return GridView.count(
           crossAxisCount: columns,
@@ -283,12 +277,7 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
     );
   }
 
-  Widget _summaryCard(
-    String title,
-    String value,
-    IconData icon,
-    Color color,
-  ) {
+  Widget _summaryCard(String title, String value, IconData icon, Color color) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -341,9 +330,7 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
       decoration: BoxDecoration(
         color: AppColors.warning.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: AppColors.warning.withValues(alpha: 0.25),
-        ),
+        border: Border.all(color: AppColors.warning.withValues(alpha: 0.25)),
       ),
       child: Row(
         children: [
@@ -434,9 +421,7 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
 
   Widget _content() {
     if (_isLoading) {
-      return const Center(
-        child: CircularProgressIndicator(color: adminBlue),
-      );
+      return const Center(child: CircularProgressIndicator(color: adminBlue));
     }
 
     if (_errorMessage != null) {
@@ -468,7 +453,7 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.only(bottom: 24),
         itemCount: _filteredRecords.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        separatorBuilder: (_, _) => const SizedBox(height: 10),
         itemBuilder: (context, index) =>
             _retentionCard(_filteredRecords[index]),
       ),
@@ -480,8 +465,9 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
     final itemName = _fallback(record['item_name'], 'Unknown Item');
     final statusColor = _statusColor(status);
     final disposal = _activeDisposalForItem(record['item_id']);
-    final disposalStatus =
-        disposal == null ? '' : _text(disposal['disposal_status']).toUpperCase();
+    final disposalStatus = disposal == null
+        ? ''
+        : _text(disposal['disposal_status']).toUpperCase();
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -538,7 +524,10 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
             spacing: 24,
             runSpacing: 10,
             children: [
-              _detail('Start Date', _formatDate(record['retention_start_date'])),
+              _detail(
+                'Start Date',
+                _formatDate(record['retention_start_date']),
+              ),
               _detail('Due Date', _formatDate(record['retention_due_date'])),
               _detail(
                 'Storage Location',
@@ -577,12 +566,30 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
               ),
             ),
           ],
+          if (status == 'DUE' && record['can_create_disposal'] != true) ...[
+            const SizedBox(height: 10),
+            Text(
+              _fallback(
+                record['disposal_block_reason'],
+                'Refresh to check disposal eligibility.',
+              ),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 11.5,
+              ),
+            ),
+          ],
           if (status == 'DUE') ...[
             const SizedBox(height: 14),
             Align(
               alignment: Alignment.centerRight,
               child: FilledButton.icon(
-                onPressed: disposalStatus == 'PENDING' ||
+                onPressed:
+                    record['can_create_disposal'] != true ||
+                        _busyItems.contains(
+                          int.tryParse(_text(record['item_id'])),
+                        ) ||
+                        disposalStatus == 'PENDING' ||
                         disposalStatus == 'COMPLETED'
                     ? null
                     : () => _createDisposal(record),
@@ -595,8 +602,8 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
                   disposalStatus == 'PENDING'
                       ? 'Disposal Pending'
                       : disposalStatus == 'COMPLETED'
-                          ? 'Disposal Completed'
-                          : 'Create Disposal Record',
+                      ? 'Disposal Completed'
+                      : 'Create Disposal Record',
                 ),
               ),
             ),
@@ -613,59 +620,67 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
       return;
     }
 
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Create Disposal Record?'),
-          content: Text(
-            '${_fallback(record['item_name'], 'This item')} has reached its retention due date. A PENDING disposal record will be created for administrative processing.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: adminBlue,
-                foregroundColor: Colors.white,
-              ),
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Create Record'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true) return;
-
+    if (_busyItems.contains(itemId) || record['can_create_disposal'] != true) {
+      return;
+    }
+    setState(() => _busyItems.add(itemId));
     try {
-      final response = await http.post(
-        Uri.parse('${AuthService.baseUrl}/disposals/$itemId'),
-        headers: {
-          ...AuthService.authenticatedHeaders(),
-          'Content-Type': 'application/json',
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('Create Disposal Record?'),
+            content: Text(
+              '${_fallback(record['item_name'], 'This item')} has reached its retention due date. A PENDING disposal record will be created for administrative processing.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: adminBlue,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Create Record'),
+              ),
+            ],
+          );
         },
-        body: jsonEncode({}),
       );
 
-      if (response.statusCode != 201) {
-        _showMessage(
-          _extractMessage(
-            response,
-            fallback: 'Failed to create disposal record.',
-          ),
-          isError: true,
-        );
-        return;
-      }
+      if (confirmed != true || !mounted) return;
 
-      _showMessage('Disposal record created successfully.');
-      await _loadData();
-    } catch (error) {
-      _showMessage('Unable to connect to server: $error', isError: true);
+      try {
+        final response = await http.post(
+          Uri.parse('${AuthService.baseUrl}/disposals/$itemId'),
+          headers: {
+            ...AuthService.authenticatedHeaders(),
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({}),
+        );
+
+        if (response.statusCode != 201) {
+          _showMessage(
+            _extractMessage(
+              response,
+              fallback: 'Failed to create disposal record.',
+            ),
+            isError: true,
+          );
+          return;
+        }
+
+        _showMessage('Disposal record created successfully.');
+        await _loadData();
+      } catch (error) {
+        _showMessage('Unable to connect to server: $error', isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busyItems.remove(itemId));
     }
   }
 
@@ -745,10 +760,7 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
                   fontSize: 12,
                 ),
               ),
-              if (action != null) ...[
-                const SizedBox(height: 12),
-                action,
-              ],
+              if (action != null) ...[const SizedBox(height: 12), action],
             ],
           ),
         ),
@@ -793,9 +805,11 @@ class _RetentionMonitorScreenState extends State<RetentionMonitorScreen> {
         .replaceAll('_', ' ')
         .toLowerCase()
         .split(' ')
-        .map((word) => word.isEmpty
-            ? word
-            : '${word[0].toUpperCase()}${word.substring(1)}')
+        .map(
+          (word) => word.isEmpty
+              ? word
+              : '${word[0].toUpperCase()}${word.substring(1)}',
+        )
         .join(' ');
   }
 

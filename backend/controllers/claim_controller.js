@@ -12,130 +12,34 @@ const {
   verifyOtp
 } = require('../controllers/otp_controller');
 
+const lifecycle = require('../services/item_lifecycle_service');
 const createClaim = async (req, res) => {
-  try {
-    const claimantId = req.user.user_id;
-    const { item_id, claim_reason } = req.body;
-
-    if (!item_id) {
-      return res.status(400).json({
-        message: 'Item ID is required'
-      });
-    }
-
-    // Check item exists
-    const [items] = await pool.query(
-      `
-      SELECT
-        item_id,
-        item_name,
-        item_type,
-        value_tier,
-        reporter_id,
-        publication_status,
-        status
-      FROM item
-      WHERE item_id = ?
-      `,
-      [item_id]
-    );
-
-    if (items.length === 0) {
-      return res.status(404).json({
-        message: 'Item not found'
-      });
-    }
-
-    const item = items[0];
-
-    // Only FOUND items can be claimed
-    if (item.item_type !== 'FOUND') {
-      return res.status(400).json({
-        message: 'Only found items can be claimed'
-      });
-    }
-
-    if (item.publication_status !== 'PUBLISHED') {
-      return res.status(409).json({ message: 'Item is not published for claims' });
-    }
-    if (Number(item.reporter_id) === Number(claimantId)) {
-      return res.status(403).json({ message: 'You cannot claim an item you reported' });
-    }
-    const [approvedClaims] = await pool.query(`SELECT claim_id FROM claim WHERE item_id=?
-      AND claim_status IN ('APPROVED','COLLECTED') LIMIT 1`, [item_id]);
-    if (approvedClaims.length) {
-      return res.status(409).json({ message: 'Item already has an approved claim' });
-    }
-    // Prevent claiming unavailable item
-    if (
-      item.status === 'CLAIMED' ||
-      item.status === 'COLLECTED' ||
-      item.status === 'DISPOSED'
-    ) {
-      return res.status(400).json({
-        message: 'This item is no longer available for claim'
-      });
-    }
-
-    // Prevent duplicate claim by same user
-    const [existingClaims] = await pool.query(
-      `
-      SELECT claim_id
-      FROM claim
-      WHERE item_id = ?
-        AND claimant_id = ?
-        AND claim_status IN (
-          'PENDING',
-          'UNDER_REVIEW',
-          'VERIFICATION_REQUIRED',
-          'APPROVED'
-        )
-      `,
-      [item_id, claimantId]
-    );
-
-    if (existingClaims.length > 0) {
-      return res.status(409).json({
-        message: 'You already have an active claim for this item'
-      });
-    }
-
-    const [result] = await pool.query(
-      `
-      INSERT INTO claim
-      (
-        item_id,
-        claimant_id,
-        claim_reason,
-        claim_status
-      )
-      VALUES (?, ?, ?, 'PENDING')
-      `,
-      [
-        item_id,
-        claimantId,
-        claim_reason || null
-      ]
-    );
-
-    return res.status(201).json({
-      message: 'Claim submitted successfully',
-      claim: {
-        claim_id: result.insertId,
-        item_id,
-        claimant_id: claimantId,
-        claim_status: 'PENDING',
-        value_tier: item.value_tier
-      }
-    });
-  } catch (error) {
-    console.error('Create claim error:', error);
-
-    return res.status(500).json({
-      message: 'Failed to submit claim',
-      error: error.message
-    });
+  const claimantId = req.user.user_id;
+  const { item_id, claim_reason } = req.body;
+  if (!Number.isSafeInteger(Number(item_id)) || Number(item_id) < 1) {
+    return res.status(400).json({ message: 'Valid item ID is required' });
   }
+  try {
+    const claim = await lifecycle.withItem(Number(item_id), async (connection, item) => {
+      if (item.item_type !== 'FOUND') lifecycle.fail('Only found items can be claimed', 400);
+      if (item.publication_status !== 'PUBLISHED') lifecycle.fail('Item is not published for claims');
+      if (Number(item.reporter_id) === Number(claimantId)) lifecycle.fail('You cannot claim an item you reported', 403);
+      if (!lifecycle.available(item)) lifecycle.fail('This item is no longer available for claim', 400);
+      const [approved] = await connection.query(`SELECT claim_id FROM claim WHERE item_id=?
+        AND claim_status IN ('APPROVED','COLLECTED') ORDER BY claim_id FOR UPDATE`, [item_id]);
+      if (approved.length) lifecycle.fail('Item already has an approved claim');
+      if (lifecycle.blockingDisposals(await lifecycle.disposals(connection, item_id)).length) {
+        lifecycle.fail('Item is reserved for disposal or has already been disposed');
+      }
+      const [existing] = await connection.query(`SELECT claim_id FROM claim WHERE item_id = ? AND claimant_id = ?
+        AND claim_status IN ('PENDING','VERIFICATION_REQUIRED','APPROVED') ORDER BY claim_id FOR UPDATE`, [item_id, claimantId]);
+      if (existing.length) lifecycle.fail('You already have an active claim for this item');
+      const [result] = await connection.query(`INSERT INTO claim (item_id,claimant_id,claim_reason,claim_status)
+        VALUES (?, ?, ?, 'PENDING')`, [item_id, claimantId, claim_reason || null]);
+      return { claim_id: result.insertId, item_id, claimant_id: claimantId, claim_status: 'PENDING', value_tier: item.value_tier };
+    });
+    return res.status(201).json({ message: 'Claim submitted successfully', claim });
+  } catch (error) { return lifecycle.respondError(res, error, 'Failed to submit claim'); }
 };
 
 // ----------------------------------------------------

@@ -8,12 +8,14 @@ class AuthService {
 
   static String? authToken;
   static Map<String, dynamic>? currentUser;
-  static const String baseUrl = 'http://localhost:3000/api';
-
-  static String get _baseUrl {
-    return kIsWeb
-        ? 'http://localhost:3000/api'
-        : 'http://10.0.2.2:3000/api';
+  // One address for login, reports, uploads, matching and authenticated images.
+  // Physical devices can supply --dart-define=API_BASE_URL=https://host/api.
+  static String get baseUrl {
+    const configured = String.fromEnvironment('API_BASE_URL');
+    if (configured.isNotEmpty) return configured.replaceFirst(RegExp(r'/+$'), '');
+    return !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+        ? 'http://10.0.2.2:3000/api'
+        : 'http://localhost:3000/api';
   }
 
   static Future<Map<String, dynamic>> login({
@@ -21,7 +23,7 @@ class AuthService {
     required String password,
   }) async {
     final response = await http.post(
-      Uri.parse('$_baseUrl/auth/login'),
+      Uri.parse('$baseUrl/auth/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'email': email.trim(),
@@ -48,7 +50,7 @@ class AuthService {
     String? phoneNo,
   }) async {
     final response = await http.post(
-      Uri.parse('$_baseUrl/auth/register'),
+      Uri.parse('$baseUrl/auth/register'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'name': name.trim(),

@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../../constants/app_colors.dart';
 import '../../services/auth_service.dart';
+import '../../widgets/authenticated_item_image.dart';
 import '../../widgets/student/student_shell.dart';
 
 /// Public browse + keyword search for published Lost and Found reports.
@@ -254,12 +255,12 @@ class _SearchItemScreenState extends State<SearchItemScreen> {
                 if (image != null) ...[
                   ClipRRect(
                     borderRadius: BorderRadius.circular(10),
-                    child: Image.network(
-                      image,
+                    child: AuthenticatedItemImage(
+                      url: image,
                       height: 210,
                       width: double.infinity,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => _imagePlaceholder(height: 170),
+                      placeholder: _imagePlaceholder(height: 170),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -333,10 +334,10 @@ class _SearchItemScreenState extends State<SearchItemScreen> {
               aspectRatio: 1.45,
               child: image == null
                   ? _imagePlaceholder()
-                  : Image.network(
-                      image,
+                  : AuthenticatedItemImage(
+                      url: image,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => _imagePlaceholder(),
+                      placeholder: _imagePlaceholder(),
                     ),
             ),
             Padding(
